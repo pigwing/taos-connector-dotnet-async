@@ -2,6 +2,7 @@
 using System.Text;
 using TDengine.Driver;
 using TDengine.Driver.Client;
+using Test.Fixture;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -35,9 +36,8 @@ namespace Driver.Test.Client.Query
                                    "c15 geometry(100)" +
                                    ")" +
                                    "tags(t json)";
-            this._nativeConnectString = "host=localhost;port=6030;username=root;password=taosdata";
-            this._wsConnectString =
-                "protocol=WebSocket;host=localhost;port=6041;useSSL=false;username=root;password=taosdata;enableCompression=true";
+            this._nativeConnectString = TestConnectionOptions.NativeConnectionString();
+            this._wsConnectString = TestConnectionOptions.WebSocketConnectionString();
         }
 
         private object?[][] GenerateValue(TDenginePrecision precision, out string sql)

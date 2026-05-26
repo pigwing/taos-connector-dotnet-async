@@ -71,7 +71,7 @@ namespace Data.Tests
         public void Close_Method_Should_Close_Connection()
         {
             // Arrange
-            _connection.ConnectionString = "username=root;password=taosdata";
+            _connection.ConnectionString = TestConnectionOptions.NativeConnectionString();
             _connection.Open();
 
             // Act

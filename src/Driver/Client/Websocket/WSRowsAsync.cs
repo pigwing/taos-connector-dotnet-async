@@ -1,44 +1,33 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver.Impl.WebSocketMethods;
 using TDengine.Driver.Impl.WebSocketMethods.Protocol;
 
 namespace TDengine.Driver.Client.Websocket
 {
-#if NETSTANDARD2_1_OR_GREATER
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
     public class WSRowsAsync : IRowsAsync, IAsyncDisposable
 #else
     public class WSRowsAsync : IRowsAsync, IDisposable
 #endif
     {
         private readonly ConnectionAsync _connection;
-
         private readonly ulong _resultId;
-
-        private bool _freed;
-
-        private int _currentRow;
-
         private readonly bool _isUpdate;
-
         private readonly List<TDengineMeta> _metas;
-
         private readonly Encoding _encoding;
-
+        private readonly BlockReader _blockReader;
+        private int _freed;
+        private int _currentRow;
         private int _blockSize;
-
         private byte[] _block;
-
         private bool _completed;
 
-        private readonly BlockReader _blockReader;
-
         public bool HasRows => !_isUpdate;
-
         public int AffectRows { get; }
-
         public int FieldCount { get; }
 
         public WSRowsAsync(int affectedRows)
@@ -48,90 +37,73 @@ namespace TDengine.Driver.Client.Websocket
         }
 
         public WSRowsAsync(WSQueryResp result, ConnectionAsync connection, TimeZoneInfo tz)
+            : this(result.ResultId, result, connection, tz)
+        {
+        }
+
+        public WSRowsAsync(ulong resultId, IWSMetaResp result, ConnectionAsync connection, TimeZoneInfo tz)
         {
             _connection = connection;
-            _resultId = result.ResultId;
+            _resultId = resultId;
             _isUpdate = false;
             AffectRows = -1;
             FieldCount = result.FieldsCount;
             _metas = ParseMetas(result);
             _encoding = Encoding.UTF8;
-            _blockReader = new BlockReader(55, FieldCount, result.Precision, result.FieldsTypes, tz);
+            _blockReader = new BlockReader(55, FieldCount, result.Precision, result.FieldsTypes,
+                result.FieldsScales, tz);
         }
 
-        public WSRowsAsync(WSStmtUseResultResp result, ConnectionAsync connection, TimeZoneInfo tz)
+        private List<TDengineMeta> ParseMetas(IWSMetaResp result)
         {
-            _connection = connection;
-            _resultId = result.ResultId;
-            _isUpdate = false;
-            AffectRows = -1;
-            FieldCount = result.FieldsCount;
-            _metas = ParseMetas(result);
-            _encoding = Encoding.UTF8;
-            _blockReader = new BlockReader(55, FieldCount, result.Precision, result.FieldsTypes, tz);
-        }
-
-        private List<TDengineMeta> ParseMetas(WSQueryResp result)
-        {
-            List<TDengineMeta> metaList = new List<TDengineMeta>();
-            for (int i = 0; i < FieldCount; i++)
+            var metaList = new List<TDengineMeta>();
+            for (var i = 0; i < FieldCount; i++)
             {
-                TDengineMeta meta = new TDengineMeta
+                metaList.Add(new TDengineMeta
                 {
                     name = result.FieldsNames[i],
                     type = result.FieldsTypes[i],
+                    scale = result.FieldsScales[i],
                     size = (int)result.FieldsLengths[i]
-                };
-                metaList.Add(meta);
+                });
             }
 
             return metaList;
         }
 
-        private List<TDengineMeta> ParseMetas(WSStmtUseResultResp result)
-        {
-            List<TDengineMeta> metaList = new List<TDengineMeta>();
-            for (int i = 0; i < FieldCount; i++)
-            {
-                TDengineMeta meta = new TDengineMeta
-                {
-                    name = result.FieldsNames[i],
-                    type = result.FieldsTypes[i],
-                    size = (int)result.FieldsLengths[i]
-                };
-                metaList.Add(meta);
-            }
-
-            return metaList;
-        }
-
-
-
-#if NETSTANDARD2_1_OR_GREATER
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
         public async ValueTask DisposeAsync()
         {
-            if (!_freed)
-            {
-                _freed = true;
-                if (_connection != null && _connection.IsAvailable())
-                {
-                    await _connection.FreeResultAsync(_resultId);
-                }
-            }
+            await FreeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        public void Dispose()
+        {
+            FreeAsync(CancellationToken.None).GetAwaiter().GetResult();
         }
 #else
         public void Dispose()
         {
-            if (!_freed)
-            {
-                _freed = true;
-                if (_connection != null && _connection.IsAvailable())
-                {
-                    _ = _connection.FreeResultAsync(_resultId);
-                }
-            }
+            FreeAsync(CancellationToken.None).GetAwaiter().GetResult();
         }
 #endif
+
+        private async Task FreeAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref _freed, 1) == 1) return;
+
+            try
+            {
+                if (_connection != null && _connection.IsAvailable() && !_isUpdate)
+                {
+                    await _connection.FreeResultAsync(_resultId).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                _block = null;
+            }
+        }
 
         public long GetBytes(int ordinal, long dataOffset, byte[] buffer, int bufferOffset, int length)
         {
@@ -161,56 +133,145 @@ namespace TDengine.Driver.Client.Websocket
 
         public string GetName(int ordinal) => _metas[ordinal].name;
 
+        public int GetFieldPrecision(int ordinal) => _metas[ordinal].precision;
+
+        public int GetFieldScale(int ordinal) => _metas[ordinal].scale;
+
         public int GetOrdinal(string name) => _metas.FindIndex(m => m.name == name);
 
-        public async Task<bool> ReadAsync()
+        public Task<bool> ReadAsync()
+        {
+            return ReadAsync(CancellationToken.None);
+        }
+
+        public async Task<bool> ReadAsync(CancellationToken cancellationToken)
         {
             if (_completed) return false;
             if (_block == null)
             {
-                await FetchBlockAsync();
+                await FetchBlockAsync(cancellationToken).ConfigureAwait(false);
                 return !_completed;
             }
 
             _currentRow += 1;
             if (_currentRow != _blockSize) return true;
-            await FetchBlockAsync();
+            await FetchBlockAsync(cancellationToken).ConfigureAwait(false);
             return !_completed;
         }
 
-        private async Task FetchBlockAsync()
+        public bool IsDBNull(int ordinal)
         {
-            var fetchRawBlockResult = await _connection.FetchRawBlockBinaryAsync(_resultId);
-            //Flag           uint64 //8               0
-            //Action         uint64 //8               8
-            //Version        uint16 //2               16
-            //Time           uint64 //8               18
-            //ReqID          uint64 //8               26
-            //Code           uint32 //4               34
-            //MessageLen     uint32 //4               38
-            //Message        string //MessageLen      42
-            //ResultID       uint64 //8               42 + MessageLen
-            //Finished       bool   //1               50 + MessageLen
-            //RawBlockLength uint32 //4               51 + MessageLen
-            //RawBlock       []byte //RawBlockLength  55 + MessageLen + RawBlockLength
-            var version = BitConverter.ToUInt16(fetchRawBlockResult, 16);
+            return _blockReader.IsDBNull(_currentRow, ordinal);
+        }
+
+        public byte GetByte(int ordinal)
+        {
+            return _blockReader.GetByte(_currentRow, ordinal);
+        }
+
+        public short GetInt16(int ordinal)
+        {
+            return _blockReader.GetInt16(_currentRow, ordinal);
+        }
+
+        public int GetInt32(int ordinal)
+        {
+            return _blockReader.GetInt32(_currentRow, ordinal);
+        }
+
+        public long GetInt64(int ordinal)
+        {
+            return _blockReader.GetInt64(_currentRow, ordinal);
+        }
+
+        public bool GetBoolean(int ordinal)
+        {
+            return _blockReader.GetBoolean(_currentRow, ordinal);
+        }
+
+        public DateTime GetDateTime(int ordinal)
+        {
+            return _blockReader.GetDateTime(_currentRow, ordinal);
+        }
+
+        public decimal GetDecimal(int ordinal)
+        {
+            return _blockReader.GetDecimal(_currentRow, ordinal);
+        }
+
+        public double GetDouble(int ordinal)
+        {
+            return _blockReader.GetDouble(_currentRow, ordinal);
+        }
+
+        public float GetFloat(int ordinal)
+        {
+            return _blockReader.GetFloat(_currentRow, ordinal);
+        }
+
+        public string GetString(int ordinal)
+        {
+            return _blockReader.GetString(_currentRow, ordinal);
+        }
+
+        public int GetValues(object[] values)
+        {
+            return _blockReader.GetValues(_currentRow, values);
+        }
+
+        public DateTimeOffset GetDateTimeOffset(int ordinal)
+        {
+            return _blockReader.GetDateTimeOffset(_currentRow, ordinal);
+        }
+
+        private async Task FetchBlockAsync(CancellationToken cancellationToken)
+        {
+            var fetchRawBlockResult = await _connection.FetchRawBlockBinaryAsync(_resultId, cancellationToken)
+                .ConfigureAwait(false);
+            var version = ReadUInt16(fetchRawBlockResult, 16);
             if (version != 1)
                 throw new Exception("Unsupported fetch raw block version " + version);
-            var code = BitConverter.ToUInt32(fetchRawBlockResult, 34);
-            var messageLen = BitConverter.ToUInt32(fetchRawBlockResult, 38);
+            var code = ReadUInt32(fetchRawBlockResult, 34);
+            var messageLen = ReadUInt32(fetchRawBlockResult, 38);
             var message = _encoding.GetString(fetchRawBlockResult, 42, (int)messageLen);
             if (code != 0)
                 throw new TDengineError((int)code, message);
             _completed = BitConverter.ToBoolean(fetchRawBlockResult, 50 + (int)messageLen);
             if (_completed)
+            {
+                _block = null;
                 return;
-            var rawBlockLength = BitConverter.ToUInt32(fetchRawBlockResult, 51 + (int)messageLen);
+            }
+            var rawBlockLength = ReadUInt32(fetchRawBlockResult, 51 + (int)messageLen);
             if (fetchRawBlockResult.Length != 55 + (int)messageLen + rawBlockLength)
                 throw new Exception("Invalid fetch raw block result length");
             _block = fetchRawBlockResult;
             _blockReader.SetBlock(_block);
             _blockSize = _blockReader.GetRows();
             _currentRow = 0;
+        }
+
+        private static ushort ReadUInt16(byte[] source, int offset)
+        {
+#if NET5_0_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            return System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(
+                source.AsSpan(offset, sizeof(ushort)));
+#else
+            return (ushort)(source[offset] | (source[offset + 1] << 8));
+#endif
+        }
+
+        private static uint ReadUInt32(byte[] source, int offset)
+        {
+#if NET5_0_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            return System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(
+                source.AsSpan(offset, sizeof(uint)));
+#else
+            return (uint)(source[offset]
+                          | (source[offset + 1] << 8)
+                          | (source[offset + 2] << 16)
+                          | (source[offset + 3] << 24));
+#endif
         }
     }
 }

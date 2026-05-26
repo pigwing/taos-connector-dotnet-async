@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver.Client.Native;
 using TDengine.Driver.Client.Websocket;
@@ -13,18 +14,26 @@ namespace TDengine.Driver.Client
             {
                 return new WSClient(builder);
             }
+
             return new NativeClient(builder);
         }
 
-        public static async Task<ITDengineClientAsync> OpenAsync(ConnectionStringBuilder builder)
+        public static Task<ITDengineClientAsync> OpenAsync(ConnectionStringBuilder builder)
         {
-            if (builder.Protocol == "WebSocket")
+            return OpenAsync(builder, CancellationToken.None);
+        }
+
+        public static async Task<ITDengineClientAsync> OpenAsync(ConnectionStringBuilder builder,
+            CancellationToken cancellationToken)
+        {
+            if (builder.Protocol == TDengineConstant.ProtocolWebSocket)
             {
-                WSClientAsync client = new WSClientAsync(builder);
-                await client.ConnectAsync();
+                var client = new WSClientAsync(builder);
+                await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
                 return client;
             }
-            throw new NotImplementedException("Native Not Implemented");
+
+            throw new NotImplementedException("Native async is not implemented");
         }
     }
 }

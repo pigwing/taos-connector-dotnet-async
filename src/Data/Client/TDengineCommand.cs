@@ -2,15 +2,14 @@
 using System.Data;
 using System.Data.Common;
 using System.Collections.Generic;
-
 using TDengine.Driver;
 
 namespace TDengine.Data.Client
 {
     public class TDengineCommand : DbCommand
     {
-        private readonly Lazy<TDengineParameterCollection> _parameters = new Lazy<TDengineParameterCollection>(
-            () => new TDengineParameterCollection());
+        private readonly Lazy<TDengineParameterCollection> _parameters =
+            new Lazy<TDengineParameterCollection>(() => new TDengineParameterCollection());
 
         private TDengineConnection _connection;
         private string _commandText;
@@ -24,7 +23,6 @@ namespace TDengine.Data.Client
         public TDengineCommand(TDengineConnection connection)
         {
             _connection = connection;
-            _stmt = connection.client.StmtInit();
         }
 
         public override void Cancel()
@@ -103,6 +101,14 @@ namespace TDengine.Data.Client
             get => _commandText;
             set
             {
+                if (_stmt != null)
+                {
+                    // if the statement is not null and need to be re-prepared,
+                    // we need to dispose the old statement and create a new one.
+                    // this is a bug workaround for TDengine 3.3.6.0
+                    _stmt.Dispose();
+                    _stmt = null;
+                }
                 _isPrepared = false;
                 _commandText = value;
             }
@@ -127,7 +133,9 @@ namespace TDengine.Data.Client
         protected override DbConnection DbConnection
         {
             get => _connection;
-            set => _connection = value as TDengineConnection ?? throw new ArgumentException($"The specified connection is not of type {nameof(TDengineConnection)}.");
+            set => _connection = value as TDengineConnection ??
+                                 throw new ArgumentException(
+                                     $"The specified connection is not of type {nameof(TDengineConnection)}.");
         }
 
         protected override DbParameterCollection DbParameterCollection => _parameters.Value;
@@ -146,25 +154,36 @@ namespace TDengine.Data.Client
 
         private IRows Query()
         {
-            return _connection.client.Query(_commandText);
+            return _connection.Client.Query(_commandText);
         }
 
         private IRows Statement()
         {
-            if(_stmt == null && _connection != null)
-            {
-                _stmt = _connection.client.StmtInit();
-            }
-
-            if (!_isPrepared)
-            {
-                _isPrepared = true;
-                _stmt.Prepare(_commandText);
-            }
-
             if (!_parameters.IsValueCreated || _parameters.Value.Count == 0)
             {
                 return Query();
+            }
+
+            if (_connection == null) throw new InvalidOperationException("Connection is null");
+
+            if (_stmt == null)
+            {
+                _stmt = _connection.Client.StmtInit();
+            }
+            
+            else if (!_isPrepared)
+            {
+                
+                _stmt.Dispose();
+                _stmt = _connection.Client.StmtInit();
+            }
+
+            if (_stmt == null) throw new InvalidOperationException("Statement is null");
+
+            if (!_isPrepared)
+            {
+                _stmt.Prepare(_commandText);
+                _isPrepared = true;
             }
 
             var isInsert = _stmt.IsInsert();

@@ -1,10 +1,11 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace TDengine.Driver
 {
-#if NETSTANDARD2_1_OR_GREATER
-public interface IRowsAsync : IAsyncDisposable
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
+public interface IRowsAsync : IAsyncDisposable, IDisposable
 #else
     public interface IRowsAsync : IDisposable
 #endif
@@ -31,9 +32,41 @@ public interface IRowsAsync : IAsyncDisposable
 
         string GetName(int ordinal);
 
+        int GetFieldPrecision(int ordinal);
+
+        int GetFieldScale(int ordinal);
+
         int GetOrdinal(string name);
 
         Task<bool> ReadAsync();
+
+        Task<bool> ReadAsync(CancellationToken cancellationToken);
+
+        bool IsDBNull(int ordinal);
+
+        byte GetByte(int ordinal);
+
+        short GetInt16(int ordinal);
+
+        int GetInt32(int ordinal);
+
+        long GetInt64(int ordinal);
+
+        bool GetBoolean(int ordinal);
+
+        DateTime GetDateTime(int ordinal);
+
+        decimal GetDecimal(int ordinal);
+
+        double GetDouble(int ordinal);
+
+        float GetFloat(int ordinal);
+
+        string GetString(int ordinal);
+
+        int GetValues(object[] values);
+
+        DateTimeOffset GetDateTimeOffset(int ordinal);
     }
 }
 

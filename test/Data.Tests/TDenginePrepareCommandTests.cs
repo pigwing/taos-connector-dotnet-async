@@ -11,8 +11,7 @@ namespace Data.Tests
 
         public TDenginePrepareCommandTests()
         {
-            _connection =
-                new TDengineConnection("host=localhost;port=6030;username=root;password=taosdata;protocol=Native;");
+            _connection = new TDengineConnection(TestConnectionOptions.NativeConnectionString());
             _connection.Open();
         }
 
@@ -46,9 +45,7 @@ namespace Data.Tests
             CreateDatabaseAndTable(db, table);
             try
             {
-                var connection =
-                    new TDengineConnection(
-                        $"host=localhost;port=6030;username=root;password=taosdata;protocol=Native;db={db};");
+                var connection = new TDengineConnection(TestConnectionOptions.NativeConnectionString(db));
                 connection.Open();
 
                 command.CommandText = $"select * from {db}.{table}";
@@ -73,9 +70,7 @@ namespace Data.Tests
             CreateDatabaseAndTable(db, table);
             try
             {
-                var connection =
-                    new TDengineConnection(
-                        $"host=localhost;port=6030;username=root;password=taosdata;protocol=Native;db={db};");
+                var connection = new TDengineConnection(TestConnectionOptions.NativeConnectionString(db));
                 connection.Open();
                 using var command = new TDengineCommand(connection);
                 command.CommandText = $"select * from {db}.{table}";

@@ -5,6 +5,7 @@ using System.Threading;
 using TDengine.Driver;
 using TDengine.Driver.Client;
 using TDengine.TMQ;
+using Test.Fixture;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -25,9 +26,8 @@ namespace Driver.Test.Client.TMQ
         public Consumer(ITestOutputHelper output)
         {
             this._output = output;
-            this._nativeConnectString = "host=127.0.0.1;port=6030;username=root;password=taosdata";
-            this._wsConnectString =
-                "protocol=WebSocket;host=127.0.0.1;port=6041;useSSL=false;username=root;password=taosdata;enableCompression=true";
+            this._nativeConnectString = TestConnectionOptions.NativeConnectionString();
+            this._wsConnectString = TestConnectionOptions.WebSocketConnectionString();
 
             this._createTableSql = "create table if not exists all_type(ts timestamp," +
                                    "c1 bool," +
@@ -48,73 +48,10 @@ namespace Driver.Test.Client.TMQ
                                    ")" +
                                    "tags(t1 int)";
 
-            this._nativeTMQCfg = new Dictionary<string, string>()
-            {
-                { "group.id", "test" },
-                { "auto.offset.reset", "earliest" },
-                { "td.connect.ip", "127.0.0.1" },
-                { "td.connect.user", "root" },
-                { "td.connect.pass", "taosdata" },
-                { "td.connect.port", "6030" },
-                { "client.id", "test_tmq_c" },
-                { "enable.auto.commit", "false" },
-                { "msg.with.table.name", "true" },
-                { "session.timeout.ms", "12000" },
-                { "max.poll.interval.ms", "300000" }
-            };
-
-            this._nativeTMQCfgAutoCommit = new Dictionary<string, string>()
-            {
-                { "group.id", "test" },
-                { "auto.offset.reset", "earliest" },
-                { "td.connect.ip", "127.0.0.1" },
-                { "td.connect.user", "root" },
-                { "td.connect.pass", "taosdata" },
-                { "td.connect.port", "6030" },
-                { "client.id", "test_tmq_c" },
-                { "enable.auto.commit", "true" },
-                { "auto.commit.interval.ms", "100" },
-                { "msg.with.table.name", "true" },
-                { "session.timeout.ms", "12000" },
-                { "max.poll.interval.ms", "300000" }
-            };
-
-            this._wsTMQCfg = new Dictionary<string, string>()
-            {
-                { "td.connect.type", "WebSocket" },
-                { "group.id", "test" },
-                { "auto.offset.reset", "earliest" },
-                { "td.connect.ip", "127.0.0.1" },
-                { "td.connect.user", "root" },
-                { "td.connect.pass", "taosdata" },
-                { "td.connect.port", "6041" },
-                { "client.id", "test_tmq_c" },
-                { "enable.auto.commit", "false" },
-                { "msg.with.table.name", "true" },
-                { "useSSL", "false" },
-                { "ws.message.enableCompression", "true" },
-                { "session.timeout.ms", "12000" },
-                { "max.poll.interval.ms", "300000" }
-            };
-
-            this._wsTMQCfgAutoCommit = new Dictionary<string, string>()
-            {
-                { "td.connect.type", "WebSocket" },
-                { "group.id", "test" },
-                { "auto.offset.reset", "earliest" },
-                { "td.connect.ip", "localhost" },
-                { "td.connect.user", "root" },
-                { "td.connect.pass", "taosdata" },
-                { "td.connect.port", "6041" },
-                { "client.id", "test_tmq_c" },
-                { "enable.auto.commit", "true" },
-                { "auto.commit.interval.ms", "100" },
-                { "msg.with.table.name", "true" },
-                { "useSSL", "false" },
-                { "ws.message.enableCompression", "true" },
-                { "session.timeout.ms", "12000" },
-                { "max.poll.interval.ms", "300000" }
-            };
+            this._nativeTMQCfg = TestConnectionOptions.NativeTmqConfig(false);
+            this._nativeTMQCfgAutoCommit = TestConnectionOptions.NativeTmqConfig(true);
+            this._wsTMQCfg = TestConnectionOptions.WebSocketTmqConfig(false);
+            this._wsTMQCfgAutoCommit = TestConnectionOptions.WebSocketTmqConfig(true);
         }
 
         private void NewConsumerTest(string connectString, string db, string topic, Dictionary<string, string> cfg)

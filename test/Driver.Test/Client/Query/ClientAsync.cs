@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver;
 using TDengine.Driver.Client;
+using Test.Fixture;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -36,9 +38,8 @@ namespace Driver.Test.Client.Query
                                    "c15 geometry(100)" +
                                    ")" +
                                    "tags(t json)";
-            this._nativeConnectString = "host=192.168.1.18;port=6030;username=root;password=taosdata";
-            this._wsConnectString =
-                "protocol=WebSocket;host=192.168.1.18;port=6341;useSSL=false;username=root;password=taosdata;enableCompression=true";
+            this._nativeConnectString = TestConnectionOptions.NativeConnectionString();
+            this._wsConnectString = TestConnectionOptions.WebSocketConnectionString();
         }
 
         private object?[][] GenerateValue(TDenginePrecision precision, out string sql)
@@ -626,6 +627,145 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
                 finally
                 {
                     await client.ExecAsync($"drop database if exists {db}");
+                }
+            }
+        }
+
+        private async Task ConnectionAvailableAsyncTest(string connectString)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                Assert.True(client.ConnectionAvailable());
+            }
+        }
+
+        private async Task OpenWithCancelledTokenAsyncTest(string connectString)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var cts = new CancellationTokenSource())
+            {
+                cts.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => DbDriver.OpenAsync(builder, cts.Token));
+            }
+        }
+
+        private async Task ConcurrentQueryAndFetchAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await client.ExecAsync($"drop database if exists {db}");
+                    await client.ExecAsync($"create database {db}");
+                    await client.ExecAsync($"use {db}");
+                    await client.ExecAsync("create table test_async_concurrent(ts timestamp, c1 int, c2 binary(32))");
+
+                    var insertTasks = new[]
+                    {
+                        client.ExecAsync("insert into test_async_concurrent values(now, 1, 'first')"),
+                        client.ExecAsync("insert into test_async_concurrent values(now + 1a, 2, 'second')")
+                    };
+                    var affectedRows = await Task.WhenAll(insertTasks);
+                    Assert.All(affectedRows, affected => Assert.Equal(1, affected));
+
+                    var firstQuery = client.QueryAsync("select c1, c2 from test_async_concurrent where c1 = 1");
+                    var secondQuery = client.QueryAsync("select c1, c2 from test_async_concurrent where c1 = 2");
+                    var rows = await Task.WhenAll(firstQuery, secondQuery);
+
+                    await AssertSingleConcurrentRow(rows[0], 1, "first");
+                    await AssertSingleConcurrentRow(rows[1], 2, "second");
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+                finally
+                {
+                    if (client.ConnectionAvailable())
+                    {
+                        await client.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private static async Task AssertSingleConcurrentRow(IRowsAsync rows, int expectedValue, string expectedText)
+        {
+            using (rows)
+            {
+                Assert.True(await rows.ReadAsync());
+                Assert.Equal(expectedValue, rows.GetInt32(0));
+                Assert.Equal(expectedText, rows.GetString(1));
+
+                var values = new object[rows.FieldCount];
+                Assert.Equal(2, rows.GetValues(values));
+                Assert.Equal(expectedValue, values[0]);
+                Assert.Equal(Encoding.UTF8.GetBytes(expectedText), values[1]);
+
+                Assert.False(await rows.ReadAsync());
+            }
+        }
+
+        private async Task ConcurrentInsertAndQueryStressAsyncTest(string connectString, string db)
+        {
+            const int concurrency = 32;
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await client.ExecAsync($"drop database if exists {db}");
+                    await client.ExecAsync($"create database {db} precision 'ns'");
+                    await client.ExecAsync($"use {db}");
+                    await client.ExecAsync("create table test_async_stress(ts timestamp, c1 int, c2 binary(32))");
+
+                    var baseTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000000L;
+                    var insertTasks = new Task<long>[concurrency];
+                    for (var i = 0; i < concurrency; i++)
+                    {
+                        insertTasks[i] = client.ExecAsync(
+                            $"insert into test_async_stress values({baseTimestamp + i}, {i}, 'value_{i}')");
+                    }
+
+                    var affectedRows = await Task.WhenAll(insertTasks);
+                    Assert.All(affectedRows, affected => Assert.Equal(1, affected));
+
+                    using (var countRows = await client.QueryAsync("select count(*) from test_async_stress"))
+                    {
+                        Assert.True(await countRows.ReadAsync());
+                        Assert.Equal(concurrency, countRows.GetInt64(0));
+                    }
+
+                    var queryTasks = new Task<IRowsAsync>[concurrency];
+                    for (var i = 0; i < concurrency; i++)
+                    {
+                        queryTasks[i] = client.QueryAsync(
+                            $"select c1, c2 from test_async_stress where c1 = {i}");
+                    }
+
+                    var queryRows = await Task.WhenAll(queryTasks);
+                    var readTasks = new Task[concurrency];
+                    for (var i = 0; i < concurrency; i++)
+                    {
+                        readTasks[i] = AssertSingleConcurrentRow(queryRows[i], i, $"value_{i}");
+                    }
+
+                    await Task.WhenAll(readTasks);
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+                finally
+                {
+                    if (client.ConnectionAvailable())
+                    {
+                        await client.ExecAsync($"drop database if exists {db}");
+                    }
                 }
             }
         }

@@ -17,13 +17,11 @@ namespace Data.Tests
         public TDengineDataReaderTesting(ITestOutputHelper output)
         {
             _output = output;
-            var builder = new TDengineConnectionStringBuilder("username=root;password=taosdata");
+            var builder = new TDengineConnectionStringBuilder(TestConnectionOptions.NativeConnectionString());
             _connection = new TDengineConnection(builder.ConnectionString);
             _connection.Open();
 
-            var wsBuilder =
-                new TDengineConnectionStringBuilder(
-                    "protocol=WebSocket;host=localhost;port=6041;useSSL=false;username=root;password=taosdata");
+            var wsBuilder = new TDengineConnectionStringBuilder(TestConnectionOptions.WebSocketConnectionString());
             _wsConnection = new TDengineConnection(wsBuilder.ConnectionString);
             _wsConnection.Open();
         }

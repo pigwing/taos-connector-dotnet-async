@@ -1,87 +1,92 @@
 using System;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver.Impl.WebSocketMethods.Protocol;
 
 namespace TDengine.Driver.Impl.WebSocketMethods
 {
-
     public partial class ConnectionAsync : BaseConnectionAsync
     {
         private readonly string _user;
-
         private readonly string _password;
-
         private readonly string _db;
+        private readonly string _bearerToken;
+        private readonly string _timezone = string.Empty;
 
-        public ConnectionAsync(string addr, string user, string password, string db,
-            TimeSpan connectTimeout = default(TimeSpan), TimeSpan readTimeout = default(TimeSpan),
-            TimeSpan writeTimeout = default(TimeSpan), bool enableCompression = false)
+        public ConnectionAsync(string addr, string user, string password, string db, string bearerToken,
+            TimeSpan connectTimeout = default, TimeSpan readTimeout = default,
+            TimeSpan writeTimeout = default, bool enableCompression = false,
+            TimeZoneInfo connectionTimezone = null)
             : base(addr, connectTimeout, readTimeout, writeTimeout, enableCompression)
         {
             _user = user;
             _password = password;
             _db = db;
+            _bearerToken = bearerToken;
+            if (connectionTimezone != null)
+            {
+                _timezone = connectionTimezone.Id;
+            }
         }
 
-        public async Task<WSConnResp> ConnectAsync()
+        public async Task<WSConnResp> ConnectAsync(CancellationToken cancellationToken = default)
         {
-            await ClientConnectAsync();
-            var resp = await SendJsonBackJsonAsync<WSConnReq, WSConnResp>(WSAction.Conn, new WSConnReq
+            await ClientConnectAsync(cancellationToken).ConfigureAwait(false);
+            var reqId = _GetReqId();
+            return await SendJsonBackJsonAsync<WSConnReq, WSConnResp>(WSAction.Conn, new WSConnReq
             {
-                ReqId = _GetReqId(),
+                ReqId = reqId,
                 User = _user,
                 Password = _password,
-                Db = _db
-            });
-            return resp;
+                Db = _db,
+                Timezone = _timezone,
+                App = TDengineConstant.ProcessName,
+                Connector = TDengineConstant.WsConnectorInfo,
+                BearerToken = _bearerToken
+            }, reqId, cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task<WSQueryResp> BinaryQueryAsync(string sql, ulong reqid = 0uL)
+        public async Task<WSQueryResp> BinaryQueryAsync(string sql, ulong reqId = 0,
+            CancellationToken cancellationToken = default)
         {
-            if (reqid == default)
+            if (reqId == 0)
             {
-                reqid = _GetReqId();
+                reqId = _GetReqId();
             }
 
-            //p0 uin64  req_id
-            //p0+8 uint64  message_id
-            //p0+16 uint64 action
-            //p0+24 uint16 version
-            //p0+26 uint32 sql_len
-            //p0+30 raw sql
-            var req = new byte[30 + sql.Length];
-            WriteUInt64ToBytes(req, reqid, 0);
+            var sqlByteCount = Encoding.UTF8.GetByteCount(sql);
+            var req = new byte[30 + sqlByteCount];
+            WriteUInt64ToBytes(req, reqId, 0);
             WriteUInt64ToBytes(req, 0, 8);
             WriteUInt64ToBytes(req, WSActionBinary.BinaryQueryMessage, 16);
             WriteUInt16ToBytes(req, 1, 24);
-            WriteUInt32ToBytes(req, (uint)sql.Length, 26);
-            Buffer.BlockCopy(Encoding.UTF8.GetBytes(sql), 0, req, 30, sql.Length);
+            WriteUInt32ToBytes(req, (uint)sqlByteCount, 26);
+            Encoding.UTF8.GetBytes(sql, 0, sql.Length, req, 30);
 
-            return await SendBinaryBackJsonAsync<WSQueryResp>(req);
+            return await SendBinaryBackJsonAsync<WSQueryResp>(req, reqId, cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task<byte[]> FetchRawBlockBinaryAsync(ulong resultId)
+        public async Task<byte[]> FetchRawBlockBinaryAsync(ulong resultId,
+            CancellationToken cancellationToken = default)
         {
-            //p0 uin64  req_id
-            //p0+8 uint64  message_id
-            //p0+16 uint64 action
-            //p0+24 uint16 version
             var req = new byte[32];
-            WriteUInt64ToBytes(req, _GetReqId(), 0);
+            var reqId = _GetReqId();
+            WriteUInt64ToBytes(req, reqId, 0);
             WriteUInt64ToBytes(req, resultId, 8);
             WriteUInt64ToBytes(req, WSActionBinary.FetchRawBlockMessage, 16);
             WriteUInt64ToBytes(req, 1, 24);
-            return await SendBinaryBackBytesAsync(req);
+            return await SendBinaryBackBytesAsync(req, reqId, cancellationToken).ConfigureAwait(false);
         }
 
-        public async Task FreeResultAsync(ulong resultId)
+        public async Task FreeResultAsync(ulong resultId, CancellationToken cancellationToken = default)
         {
+            var reqId = _GetReqId();
             await SendJsonAsync(WSAction.FreeResult, new WSFreeResultReq
             {
-                ReqId = _GetReqId(),
+                ReqId = reqId,
                 ResultId = resultId
-            });
+            }, cancellationToken).ConfigureAwait(false);
         }
     }
 }

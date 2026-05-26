@@ -4,6 +4,7 @@ using Xunit;
 
 namespace Driver.Test.Client.Query
 {
+    [Collection("WebSocket async collection")]
     public partial class ClientAsync
     {
         [Fact]
@@ -137,6 +138,32 @@ namespace Driver.Test.Client.Query
         {
             var db = "ws_sml_json_test";
             await this.SMLJsonAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncConnectionAvailableTest()
+        {
+            await this.ConnectionAvailableAsyncTest(this._wsConnectString);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncOpenWithCancelledTokenTest()
+        {
+            await this.OpenWithCancelledTokenAsyncTest(this._wsConnectString);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncConcurrentQueryAndFetchTest()
+        {
+            var db = "ws_concurrent_query_fetch_test";
+            await this.ConcurrentQueryAndFetchAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncConcurrentInsertAndQueryStressTest()
+        {
+            var db = "ws_concurrent_insert_query_stress_test";
+            await this.ConcurrentInsertAndQueryStressAsyncTest(this._wsConnectString, db);
         }
     }
 }

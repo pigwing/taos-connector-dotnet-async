@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver.Impl.WebSocketMethods.Protocol;
 
@@ -9,173 +6,77 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 {
     public partial class ConnectionAsync
     {
-
-        public async Task<WSStmtInitResp> StmtInitAsync(ulong reqId)
+        public async Task<WSStmt2InitResp> Stmt2InitAsync(ulong reqId,
+            CancellationToken cancellationToken = default)
         {
-            return await SendJsonBackJsonAsync<WSStmtInitReq, WSStmtInitResp>(WSAction.STMTInit, new WSStmtInitReq
+            return await SendJsonBackJsonAsync<WSStmt2InitReq, WSStmt2InitResp>(WSAction.STMT2Init,
+                new WSStmt2InitReq
+                {
+                    ReqId = reqId,
+                    SingleStbInsert = true,
+                    SingleTableBindOnce = true,
+                }, reqId, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<WSStmt2PrepareResp> Stmt2PrepareAsync(ulong stmtId, string sql,
+            CancellationToken cancellationToken = default)
+        {
+            var reqId = _GetReqId();
+            return await SendJsonBackJsonAsync<WSStmt2PrepareReq, WSStmt2PrepareResp>(WSAction.STMT2Prepare,
+                new WSStmt2PrepareReq
+                {
+                    ReqId = reqId,
+                    StmtId = stmtId,
+                    SQL = sql,
+                    GetFields = true,
+                }, reqId, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<WSStmt2BindResp> Stmt2BindAsync(ulong stmtId, byte[] req,
+            CancellationToken cancellationToken = default)
+        {
+            var reqId = _GetReqId();
+            WriteUInt64ToBytes(req, reqId, 0);
+            WriteUInt64ToBytes(req, stmtId, 8);
+            WriteUInt64ToBytes(req, WSActionBinary.Stmt2BindMessage, 16);
+            WriteUInt16ToBytes(req, 1, 24);
+            WriteUInt32ToBytes(req, 0xffffffff, 26);
+            return await SendBinaryBackJsonAsync<WSStmt2BindResp>(req, reqId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        public async Task<WSStmt2ExecResp> Stmt2ExecAsync(ulong stmtId,
+            CancellationToken cancellationToken = default)
+        {
+            var reqId = _GetReqId();
+            return await SendJsonBackJsonAsync<WSStmt2ExecReq, WSStmt2ExecResp>(WSAction.STMT2Exec,
+                new WSStmt2ExecReq
+                {
+                    ReqId = reqId,
+                    StmtId = stmtId
+                }, reqId, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<WSStmt2UseResultResp> Stmt2UseResultAsync(ulong stmtId,
+            CancellationToken cancellationToken = default)
+        {
+            var reqId = _GetReqId();
+            return await SendJsonBackJsonAsync<WSStmt2UseResultReq, WSStmt2UseResultResp>(WSAction.STMT2Result,
+                new WSStmt2UseResultReq
+                {
+                    ReqId = reqId,
+                    StmtId = stmtId
+                }, reqId, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task Stmt2CloseAsync(ulong stmtId, CancellationToken cancellationToken = default)
+        {
+            var reqId = _GetReqId();
+            await SendJsonAsync(WSAction.STMT2Close, new WSStmt2CloseReq
             {
                 ReqId = reqId,
-            });
-        }
-
-        public async Task<WSStmtPrepareResp> StmtPrepareAsync(ulong stmtId, string sql)
-        {
-            return await SendJsonBackJsonAsync<WSStmtPrepareReq, WSStmtPrepareResp>(WSAction.STMTPrepare,
-                new WSStmtPrepareReq
-                {
-                    ReqId = _GetReqId(),
-                    StmtId = stmtId,
-                    SQL = sql
-                });
-        }
-
-        public async Task<WSStmtSetTableNameResp> StmtSetTableNameAsync(ulong stmtId, string tablename)
-        {
-            return await SendJsonBackJsonAsync<WSStmtSetTableNameReq, WSStmtSetTableNameResp>(WSAction.STMTSetTableName,
-                new WSStmtSetTableNameReq
-                {
-                    ReqId = _GetReqId(),
-                    StmtId = stmtId,
-                    Name = tablename,
-                });
-        }
-
-        public async Task<WSStmtSetTagsResp> StmtSetTagsAsync(ulong stmtId, TaosFieldE[] fields, object[] tags)
-        {
-            //p0 uin64  req_id
-            //p0+8 uint64  stmt_id
-            //p0+16 uint64 (1 (set tag) 2 (bind))
-            //p0+24 raw block
-            Array[] param = new Array[tags.Length];
-            for (int i = 0; i < tags.Length; i++)
-            {
-                if (tags[i] == null)
-                {
-                    var a = new object[1] { 123 };
-                    Array newArray = Array.CreateInstance(TDengineConstant.ScanNullableType(fields[i].type), 1);
-                    newArray.SetValue(null, 0);
-                    param[i] = newArray;
-                }
-                else
-                {
-                    Array newArray = Array.CreateInstance(tags[i].GetType(), 1);
-                    newArray.SetValue(tags[i], 0);
-                    param[i] = newArray;
-                }
-            }
-
-            var bytes = BlockWriter.Serialize(1, fields, param);
-            var req = new byte[24 + bytes.Length];
-            WriteUInt64ToBytes(req, _GetReqId(), 0);
-            WriteUInt64ToBytes(req, stmtId, 8);
-            WriteUInt64ToBytes(req, WSActionBinary.SetTagsMessage, 16);
-            Buffer.BlockCopy(bytes, 0, req, 24, bytes.Length);
-            return await SendBinaryBackJsonAsync<WSStmtSetTagsResp>(req);
-        }
-
-        public async Task<WSStmtBindResp> StmtBindAsync(ulong stmtId, TaosFieldE[] fields, object[] row)
-        {
-            //p0 uin64  req_id
-            //p0+8 uint64  stmt_id
-            //p0+16 uint64 (1 (set tag) 2 (bind))
-            //p0+24 raw block
-            Array[] param = new Array[row.Length];
-            for (int i = 0; i < row.Length; i++)
-            {
-                if (row[i] == null)
-                {
-                    Array newArray = Array.CreateInstance(TDengineConstant.ScanNullableType(fields[i].type), 1);
-                    newArray.SetValue(null, 0);
-                    param[i] = newArray;
-                }
-                else
-                {
-                    Array newArray = Array.CreateInstance(row[i].GetType(), 1);
-                    newArray.SetValue(row[i], 0);
-                    param[i] = newArray;
-                }
-            }
-
-            var bytes = BlockWriter.Serialize(1, fields, param);
-            var req = new byte[24 + bytes.Length];
-            WriteUInt64ToBytes(req, _GetReqId(), 0);
-            WriteUInt64ToBytes(req, stmtId, 8);
-            WriteUInt64ToBytes(req, WSActionBinary.BindMessage, 16);
-            Buffer.BlockCopy(bytes, 0, req, 24, bytes.Length);
-            return await SendBinaryBackJsonAsync<WSStmtBindResp>(req);
-        }
-
-        public async Task<WSStmtBindResp> StmtBindAsync(ulong stmtId, TaosFieldE[] fields, params Array[] param)
-        {
-            //p0 uin64  req_id
-            //p0+8 uint64  stmt_id
-            //p0+16 uint64 (1 (set tag) 2 (bind))
-            //p0+24 raw block
-
-            var bytes = BlockWriter.Serialize(param[0].Length, fields, param);
-            var req = new byte[24 + bytes.Length];
-            WriteUInt64ToBytes(req, _GetReqId(), 0);
-            WriteUInt64ToBytes(req, stmtId, 8);
-            WriteUInt64ToBytes(req, WSActionBinary.BindMessage, 16);
-            Buffer.BlockCopy(bytes, 0, req, 24, bytes.Length);
-            return await SendBinaryBackJsonAsync<WSStmtBindResp>(req);
-        }
-
-        public async Task<WSStmtAddBatchResp> StmtAddBatchAsync(ulong stmtId)
-        {
-            return await SendJsonBackJsonAsync<WSStmtAddBatchReq, WSStmtAddBatchResp>(WSAction.STMTAddBatch, new WSStmtAddBatchReq
-            {
-                ReqId = _GetReqId(),
                 StmtId = stmtId
-            });
-        }
-
-        public async Task<WSStmtExecResp> StmtExecAsync(ulong stmtId)
-        {
-            return await SendJsonBackJsonAsync<WSStmtExecReq, WSStmtExecResp>(WSAction.STMTExec, new WSStmtExecReq
-            {
-                ReqId = _GetReqId(),
-                StmtId = stmtId
-            });
-        }
-
-        public async  Task<WSStmtGetColFieldsResp> StmtGetColFieldsAsync(ulong stmtId)
-        {
-            return await SendJsonBackJsonAsync<WSStmtGetColFieldsReq, WSStmtGetColFieldsResp>(WSAction.STMTGetColFields,
-                new WSStmtGetColFieldsReq
-                {
-                    ReqId = _GetReqId(),
-                    StmtId = stmtId
-                });
-        }
-
-        public async Task<WSStmtGetTagFieldsResp> StmtGetTagFieldsAsync(ulong stmtId)
-        {
-            return await SendJsonBackJsonAsync<WSStmtGetTagFieldsReq, WSStmtGetTagFieldsResp>(WSAction.STMTGetTagFields,
-                new WSStmtGetTagFieldsReq
-                {
-                    ReqId = _GetReqId(),
-                    StmtId = stmtId
-                });
-        }
-
-        public async Task<WSStmtUseResultResp> StmtUseResultAsync(ulong stmtId)
-        {
-            return await SendJsonBackJsonAsync<WSStmtUseResultReq, WSStmtUseResultResp>(WSAction.STMTUseResult,
-                new WSStmtUseResultReq
-                {
-                    ReqId = _GetReqId(),
-                    StmtId = stmtId
-                });
-        }
-
-        public async Task StmtCloseAsync(ulong stmtId)
-        {
-            await SendJsonAsync(WSAction.STMTClose, new WSStmtCloseReq
-            {
-                ReqId = _GetReqId(),
-                StmtId = stmtId
-            });
+            }, cancellationToken).ConfigureAwait(false);
         }
     }
 }

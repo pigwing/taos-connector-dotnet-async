@@ -4,6 +4,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
     public static class WSAction
     {
+        public const string Version = "version";
         public const string Conn = "conn";
         public const string Query = "query";
         public const string Fetch = "fetch";
@@ -22,6 +23,12 @@ namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
         public const string STMTGetColFields = "get_col_fields";
         public const string STMTUseResult = "use_result";
 
+        public const string STMT2Init = "stmt2_init";
+        public const string STMT2Prepare = "stmt2_prepare";
+        public const string STMT2Exec = "stmt2_exec";
+        public const string STMT2Result = "stmt2_result";
+        public const string STMT2Close = "stmt2_close";
+
         public const string SchemalessWrite = "insert";
     }
 
@@ -31,6 +38,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
         public const int BindMessage = 2;
         public const int BinaryQueryMessage = 6;
         public const int FetchRawBlockMessage = 7;
+        public const int Stmt2BindMessage = 9;
     }
 
     public static class WSTMQAction

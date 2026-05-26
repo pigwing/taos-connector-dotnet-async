@@ -24,6 +24,8 @@ namespace TDengine.Driver
         private const string AutoReconnectKey = "autoReconnect";
         private const string ReconnectRetryCountKey = "reconnectRetryCount";
         private const string ReconnectIntervalMsKey = "reconnectIntervalMs";
+        private const string ConnectionTimezoneKey = "connectionTimezone";
+        private const string BearerTokenKey = "bearerToken";
 
 
         private enum KeysEnum
@@ -44,6 +46,8 @@ namespace TDengine.Driver
             AutoReconnect,
             ReconnectRetryCount,
             ReconnectIntervalMs,
+            ConnectionTimezone,
+            BearerToken,
             Total
         }
 
@@ -63,6 +67,8 @@ namespace TDengine.Driver
         private bool _autoReconnect = false;
         private int _reconnectRetryCount = 3;
         private int _reconnectIntervalMs = 2000;
+        private TimeZoneInfo _connectionTimezone = null;
+        private string _bearerToken = string.Empty;
 
         private static readonly IReadOnlyList<string> KeysList;
         private static readonly IReadOnlyDictionary<string, KeysEnum> KeysDict;
@@ -86,6 +92,8 @@ namespace TDengine.Driver
             list[(int)KeysEnum.AutoReconnect] = AutoReconnectKey;
             list[(int)KeysEnum.ReconnectRetryCount] = ReconnectRetryCountKey;
             list[(int)KeysEnum.ReconnectIntervalMs] = ReconnectIntervalMsKey;
+            list[(int)KeysEnum.ConnectionTimezone] = ConnectionTimezoneKey;
+            list[(int)KeysEnum.BearerToken] = BearerTokenKey;
             KeysList = list;
 
             KeysDict = new Dictionary<string, KeysEnum>((int)KeysEnum.Total, StringComparer.OrdinalIgnoreCase)
@@ -105,7 +113,9 @@ namespace TDengine.Driver
                 [EnableCompressionKey] = KeysEnum.EnableCompression,
                 [AutoReconnectKey] = KeysEnum.AutoReconnect,
                 [ReconnectRetryCountKey] = KeysEnum.ReconnectRetryCount,
-                [ReconnectIntervalMsKey] = KeysEnum.ReconnectIntervalMs
+                [ReconnectIntervalMsKey] = KeysEnum.ReconnectIntervalMs,
+                [ConnectionTimezoneKey] = KeysEnum.ConnectionTimezone,
+                [BearerTokenKey] = KeysEnum.BearerToken,
             };
         }
 
@@ -115,16 +125,19 @@ namespace TDengine.Driver
             if (!string.IsNullOrWhiteSpace(connectionString))
             {
                 string[] queries = connectionString.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                // timezone and connectionTimezone can not be set in connection string
+                bool hasTimezone = false;
+                bool hasConnectionTimezone = false;
                 foreach (string query in queries)
                 {
                     string[] keyValue = query.Split(new char[] { '=' }, 2);
                     if (keyValue.Length != 2)
                     {
-                        throw new ArgumentException($"invalid connection param ${query}");
+                        throw new ArgumentException($"invalid connection param {query}");
                     }
 
                     var keyword = keyValue[0].Trim();
-                    var value = query.Contains(",") ? query.Replace(keyword, "") : keyValue[1];
+                    var value = keyValue[1].Trim();
                     KeysEnum index;
                     var exist = KeysDict.TryGetValue(keyword, out index);
                     if (exist)
@@ -151,6 +164,7 @@ namespace TDengine.Driver
                                 break;
                             case KeysEnum.Timezone:
                                 Timezone = TimeZoneInfo.FindSystemTimeZoneById(value);
+                                hasTimezone = true;
                                 break;
                             case KeysEnum.ConnTimeout:
                                 ConnTimeout = TimeSpan.Parse(value);
@@ -179,10 +193,21 @@ namespace TDengine.Driver
                             case KeysEnum.ReconnectIntervalMs:
                                 ReconnectIntervalMs = Convert.ToInt32(value);
                                 break;
+                            case KeysEnum.ConnectionTimezone:
+                                ConnectionTimezone = TimeZoneInfo.FindSystemTimeZoneById(value);
+                                hasConnectionTimezone = true;
+                                break;
+                            case KeysEnum.BearerToken:
+                                BearerToken = value;
+                                break;
                             default:
                                 throw new ArgumentOutOfRangeException(nameof(index), index, "get value error");
                         }
                     }
+                }
+                if (hasConnectionTimezone && hasTimezone)
+                {
+                    throw new ArgumentException("connectionTimezone and timezone can not be set at the same time");
                 }
             }
         }
@@ -196,7 +221,15 @@ namespace TDengine.Driver
         public int Port
         {
             get => _port;
-            set => base[PortKey] = _port = value;
+            set
+            {
+                if (value < 0 || value > ushort.MaxValue)
+                {
+                    throw new ArgumentException("invalid port value", PortKey);
+                }
+
+                base[PortKey] = _port = value;
+            }
         }
 
         public string Database
@@ -315,6 +348,30 @@ namespace TDengine.Driver
             }
         }
 
+        public TimeZoneInfo ConnectionTimezone
+        {
+            get => _connectionTimezone;
+            set
+            {
+#if NET6_0_OR_GREATER
+                if (!value.HasIanaId)
+                    throw new ArgumentException("invalid connection timezone value, only support IANA ID", ConnectionTimezoneKey);
+                base[ConnectionTimezoneKey] = value.Id;
+                _connectionTimezone = value;
+#else
+                throw new ArgumentException("ConnectionTimezone is only supported in .NET 6.0 or later and requires IANA ID",
+                    ConnectionTimezoneKey);
+#endif
+            }
+        }
+        
+        public string BearerToken
+        {
+            get => _bearerToken;
+            set => base[BearerTokenKey] = _bearerToken = value;
+        }
+
+
         public override ICollection Keys => new ReadOnlyCollection<string>((string[])KeysList);
 
         public override ICollection Values
@@ -367,6 +424,10 @@ namespace TDengine.Driver
                     return ReconnectRetryCount;
                 case KeysEnum.ReconnectIntervalMs:
                     return ReconnectIntervalMs;
+                case KeysEnum.ConnectionTimezone:
+                    return ConnectionTimezone;
+                case KeysEnum.BearerToken:
+                    return BearerToken;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(index), index, "get value error");
             }
@@ -438,6 +499,12 @@ namespace TDengine.Driver
                 case KeysEnum.ReconnectIntervalMs:
                     _reconnectIntervalMs = 2000;
                     return;
+                case KeysEnum.ConnectionTimezone:
+                    _connectionTimezone = null;
+                    return;
+                case KeysEnum.BearerToken:
+                    _bearerToken = string.Empty;
+                    return;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(index), index, null);
             }
@@ -479,6 +546,71 @@ namespace TDengine.Driver
             Port = 6041;
             Host = "localhost";
             Protocol = TDengineConstant.ProtocolWebSocket;
+        }
+
+        internal IReadOnlyList<FailoverAddress> GetFailoverAddresses()
+        {
+            var endpoints = new List<FailoverAddress>();
+            var deduplicatedCacheKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var hostValue = Host ?? string.Empty;
+            var hostSegments = hostValue.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (hostSegments.Length == 0)
+            {
+                throw new ArgumentException("host value cannot be empty", HostKey);
+            }
+
+            var isMultiHost = hostSegments.Length > 1;
+            for (var i = 0; i < hostSegments.Length; i++)
+            {
+                HostEndpointParser.ParseHostEndpoint(hostSegments[i], HostKey, out var endpointHost,
+                    out var endpointPort, allowBareIpv6: !isMultiHost);
+                var resolvedPort = ResolvePort(endpointPort);
+                var cacheKey = HostEndpointParser.BuildFailoverCacheKey(Protocol, UseSSL, endpointHost, resolvedPort);
+                if (!deduplicatedCacheKeys.Add(cacheKey))
+                {
+                    continue;
+                }
+
+                endpoints.Add(new FailoverAddress(endpointHost, resolvedPort, cacheKey));
+            }
+
+            if (endpoints.Count == 0)
+            {
+                throw new ArgumentException("invalid host value", HostKey);
+            }
+
+            return endpoints;
+        }
+
+        private int ResolvePort(int endpointPort)
+        {
+            if (endpointPort > 0)
+            {
+                return endpointPort;
+            }
+
+            if (Port > 0)
+            {
+                return Port;
+            }
+
+            if (Protocol != TDengineConstant.ProtocolWebSocket)
+            {
+                return 0;
+            }
+
+            return UseSSL ? 443 : 6041;
+        }
+
+        public TimeZoneInfo GetTimeZone()
+        {
+            if (ConnectionTimezone != null)
+            {
+                return ConnectionTimezone;
+            }
+
+            return Timezone;
         }
     }
 }

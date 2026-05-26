@@ -14,18 +14,16 @@ namespace Test.Fixture
         public DatabaseFixture()
         {
 
-            string user = "root";
-            string password = "taosdata";
-            string ip;
-            ushort port = 0;
+            string user = TestConnectionOptions.Username;
+            string password = TestConnectionOptions.Password;
+            string ip = TestConnectionOptions.Host;
+            ushort port = (ushort)TestConnectionOptions.NativePort;
 
 
             NativeMethods.Options((int)TDengineInitOption.TSDB_OPTION_CONFIGDIR, GetConfigPath());
             NativeMethods.Options((int)TDengineInitOption.TSDB_OPTION_SHELL_ACTIVITY_TIMER, "90");
             NativeMethods.Options((int)TDengineInitOption.TSDB_OPTION_LOCALE, "C");
             NativeMethods.Options((int)TDengineInitOption.TSDB_OPTION_CHARSET, "UTF-8");
-            string? ENV_HOST = Environment.GetEnvironmentVariable("TEST_HOST");
-            ip = string.IsNullOrEmpty(ENV_HOST) == true ? "127.0.0.1" : ENV_HOST;
             this.Conn = NativeMethods.Connect(ip, user, password, "", port);
             IntPtr res;
             if (Conn != IntPtr.Zero)

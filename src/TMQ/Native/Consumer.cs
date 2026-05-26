@@ -14,6 +14,8 @@ namespace TDengine.TMQ.Native
 
         private IDeserializer<TValue> valueDeserializer;
 
+        private TimeZoneInfo _tz = TimeZoneInfo.Local;
+
         private Dictionary<Type, object> defaultDeserializers = new Dictionary<Type, object>
         {
             { typeof(Dictionary<string, object>), DictionaryDeserializer.Dictionary },
@@ -27,17 +29,28 @@ namespace TDengine.TMQ.Native
             }
         }
 
-        internal void ConfSet(IntPtr conf, IEnumerable<KeyValuePair<string, string>> values)
+        private void ConfSet(IntPtr conf, IEnumerable<KeyValuePair<string, string>> values)
         {
             NullReferenceHandler(conf);
             foreach (var v in values)
             {
+                switch (v.Key)
+                {
+                    case "td.connect.type":
+                        // ignore set connection type here
+                        continue;
+                    case "connectionTimezone":
+                        _tz = TimeZoneInfo.FindSystemTimeZoneById(v.Value);
+                        continue;
+                }
+
                 int code = NativeMethods.TmqConfSet(conf, v.Key, v.Value);
                 if ((TMQ_CONF_RES)code == TMQ_CONF_RES.TMQ_CONF_UNKNOWN)
                 {
-                    throw new Exception("set config failed,since TMQ_CONF_UNKNOWN ");
+                    throw new Exception($"set config failed,since TMQ_CONF_UNKNOWN key:{v.Key}, value:{v.Value}");
                 }
-                else if ((TMQ_CONF_RES)code == TMQ_CONF_RES.TMQ_CONF_INVALID)
+
+                if ((TMQ_CONF_RES)code == TMQ_CONF_RES.TMQ_CONF_INVALID)
                 {
                     throw new Exception($"set config failed,since TMQ_CONF_INVALID key:{v.Key} value:{v.Value}");
                 }
@@ -48,38 +61,44 @@ namespace TDengine.TMQ.Native
         {
             var confPtr = NativeMethods.TmqConfNew();
             NullReferenceHandler(confPtr);
-            ConfSet(confPtr, builder.Config);
-            if (builder.ValueDeserializer == null)
-            {
-                if (!defaultDeserializers.TryGetValue(typeof(TValue), out object deserializer))
-                {
-                    throw new InvalidOperationException(
-                        $"Value deserializer was not specified and there is no default deserializer defined for type {typeof(TValue).Name}.");
-                }
-
-                this.valueDeserializer = (IDeserializer<TValue>)deserializer;
-            }
-            else
-            {
-                this.valueDeserializer = builder.ValueDeserializer;
-            }
-
-            int errStringLength = 256;
-            IntPtr errStrPtr = Marshal.AllocHGlobal(errStringLength);
-            _consumer = NativeMethods.TmqConsumerNew(confPtr, errStrPtr, errStringLength);
             try
             {
-                // error happened while create new consumer
-                if (_consumer == IntPtr.Zero)
+                ConfSet(confPtr, builder.Config);
+                if (builder.ValueDeserializer == null)
                 {
-                    // read Error string 
-                    string errStr = StringHelper.PtrToStringUTF8(errStrPtr, errStringLength);
-                    throw new TDengineError(-1, $"Create new Consumer failed, reason:{errStr}");
+                    if (!defaultDeserializers.TryGetValue(typeof(TValue), out object deserializer))
+                    {
+                        throw new InvalidOperationException(
+                            $"Value deserializer was not specified and there is no default deserializer defined for type {typeof(TValue).Name}.");
+                    }
+
+                    this.valueDeserializer = (IDeserializer<TValue>)deserializer;
+                }
+                else
+                {
+                    this.valueDeserializer = builder.ValueDeserializer;
+                }
+
+                int errStringLength = 256;
+                IntPtr errStrPtr = Marshal.AllocHGlobal(errStringLength);
+                _consumer = NativeMethods.TmqConsumerNew(confPtr, errStrPtr, errStringLength);
+                try
+                {
+                    // error happened while create new consumer
+                    if (_consumer == IntPtr.Zero)
+                    {
+                        // read Error string 
+                        string errStr = StringHelper.PtrToStringUTF8(errStrPtr, errStringLength);
+                        throw new TDengineError(-1, $"Create new Consumer failed, reason:{errStr}");
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(errStrPtr);
                 }
             }
             finally
             {
-                Marshal.FreeHGlobal(errStrPtr);
                 if (confPtr != IntPtr.Zero)
                 {
                     NativeMethods.TmqConfDestroy(confPtr);
@@ -161,7 +180,9 @@ namespace TDengine.TMQ.Native
 
             if (message == IntPtr.Zero)
             {
-                return null;
+                int code = NativeMethods.ErrorNo(IntPtr.Zero);
+                if (code == 0) return null;
+                throw new TDengineError(code,NativeMethods.Error(IntPtr.Zero));
             }
 
             try
@@ -175,11 +196,12 @@ namespace TDengine.TMQ.Native
                     new ConsumeResult<TValue>(topic, vGourpId, offset, type);
                 if (NeedGetData(type))
                 {
-                    var result = new TMQNativeRows(message, TimeZoneInfo.Local);
+                    var result = new TMQNativeRows(message, _tz);
                     while (result.Read())
-                    { 
+                    {
                         var value = this.valueDeserializer.Deserialize(result, false, null);
-                        consumeResult.Message.Add(new TmqMessage<TValue> { Value = value, TableName = result.TableName });
+                        consumeResult.Message.Add(
+                            new TmqMessage<TValue> { Value = value, TableName = result.TableName });
                     }
 
                     return consumeResult;

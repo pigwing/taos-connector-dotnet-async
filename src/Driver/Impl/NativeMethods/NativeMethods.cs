@@ -81,17 +81,13 @@ namespace TDengine.Driver.Impl.NativeMethods
         [DllImport(DLLName, EntryPoint = "taos_fetch_fields", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr taos_fetch_fields(IntPtr res);
 
-        public static List<TDengineMeta> FetchFields(IntPtr res)
+        [DllImport(DLLName, EntryPoint = "taos_fetch_fields_e", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr taos_fetch_fields_e(IntPtr res);
+
+        private static List<TDengineMeta> fetch_fields(IntPtr res, int fieldCount)
         {
             List<TDengineMeta> metaList = new List<TDengineMeta>();
-            if (res == IntPtr.Zero)
-            {
-                return metaList;
-            }
-
-            int fieldCount = FieldCount(res);
             IntPtr fieldsPtr = taos_fetch_fields(res);
-
             for (int i = 0; i < fieldCount; ++i)
             {
                 int offset = i * (int)TaosField.STRUCT_SIZE;
@@ -105,6 +101,45 @@ namespace TDengine.Driver.Impl.NativeMethods
             }
 
             return metaList;
+        }
+
+        private static List<TDengineMeta> fetch_fields_e(IntPtr res, int fieldCount)
+        {
+            List<TDengineMeta> metaList = new List<TDengineMeta>();
+            IntPtr fieldsPtr = taos_fetch_fields_e(res);
+            for (int i = 0; i < fieldCount; ++i)
+            {
+                TDengineMeta meta = new TDengineMeta();
+                IntPtr fieldPtr = IntPtr.Add(fieldsPtr, i * Marshal.SizeOf(typeof(TaosFieldE)));
+                var field = (TaosFieldE)Marshal.PtrToStructure(fieldPtr, typeof(TaosFieldE));
+                meta.name = field.name;
+                meta.type = (byte)field.type;
+                meta.size = field.bytes;
+                meta.precision = field.precision;
+                meta.scale = field.scale;
+                metaList.Add(meta);
+            }
+
+            return metaList;
+        }
+
+        public static List<TDengineMeta> FetchFields(IntPtr res)
+        {
+            List<TDengineMeta> metaList = new List<TDengineMeta>();
+            if (res == IntPtr.Zero)
+            {
+                return metaList;
+            }
+
+            int fieldCount = FieldCount(res);
+            try
+            {
+                return fetch_fields_e(res, fieldCount);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return fetch_fields(res, fieldCount);
+            }
         }
 
         [DllImport(DLLName, EntryPoint = "taos_fetch_row", CallingConvention = CallingConvention.Cdecl)]
@@ -287,6 +322,64 @@ namespace TDengine.Driver.Impl.NativeMethods
             finally
             {
                 utf8PtrStruct.UTF8FreePtr();
+            }
+        }
+        // DLL_EXPORT int   taos_options_connection(TAOS *taos, TSDB_OPTION_CONNECTION option, const void *arg, ...);
+        [DllImport(DLLName, EntryPoint = "taos_options_connection", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int OptionsConnection(IntPtr res, int option, IntPtr arg);
+
+        public static int OptionsConnection(IntPtr res, int option, string arg)
+        {
+            UTF8PtrStruct utf8PtrStruct = new UTF8PtrStruct(arg);
+            try
+            {
+                return OptionsConnection(res, option, utf8PtrStruct.utf8Ptr);
+            }
+            finally
+            {
+                utf8PtrStruct.UTF8FreePtr();
+            }
+        }
+        
+        public static int CleanOptionsConnection(IntPtr res, int option)
+        {
+            // This is a workaround for the taos_options_connection function
+            // that does not support cleaning options.
+            return OptionsConnection(res, option, IntPtr.Zero);
+        }
+        
+        // 3.4.0.0+
+        // DLL_EXPORT TAOS *taos_connect_token(const char *ip, const char *token, const char *db, uint16_t port);
+        [DllImport(DLLName, EntryPoint = "taos_connect_token", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ConnectToken(IntPtr ip, string token, string db, ushort port);
+
+        public static IntPtr ConnectToken(string ip, string token, string db, ushort port)
+        {
+            if (string.IsNullOrEmpty(ip))
+            {
+                return ConnectToken(IntPtr.Zero, token, db, port);
+            }
+
+            UTF8PtrStruct utf8PtrStruct = new UTF8PtrStruct(ip);
+            var conn = ConnectToken(utf8PtrStruct.utf8Ptr, token, db, port);
+            utf8PtrStruct.UTF8FreePtr();
+            return conn;
+        }
+        
+        // DLL_EXPORT int32_t taos_connect_is_alive(TAOS *taos);
+        [DllImport(DLLName, EntryPoint = "taos_connect_is_alive", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int ConnectIsAlive(IntPtr taos);
+        
+        public static int IsConnectionAlive(IntPtr taos)
+        {
+            try
+            {
+                return ConnectIsAlive(taos);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // taos_connect_is_alive not found, return success by default
+                return 1;
             }
         }
     }

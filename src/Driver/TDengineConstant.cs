@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace TDengine.Driver
@@ -22,8 +24,13 @@ namespace TDengine.Driver
         TSDB_DATA_TYPE_UINT = 13, // 4 bytes
         TSDB_DATA_TYPE_UBIGINT = 14, // 8 bytes
         TSDB_DATA_TYPE_JSONTAG = 15, //4096 bytes 
-        TSDB_DATA_TYPE_VARBINARY = 16,
-        TSDB_DATA_TYPE_GEOMETRY = 20,
+        TSDB_DATA_TYPE_VARBINARY = 16, // binary
+        TSDB_DATA_TYPE_DECIMAL = 17, // decimal
+        TSDB_DATA_TYPE_BLOB = 18, // binary
+        TSDB_DATA_TYPE_MEDIUMBLOB = 19,
+        TSDB_DATA_TYPE_GEOMETRY = 20, // geometry
+        TSDB_DATA_TYPE_DECIMAL64 = 21, // decimal64
+        TSDB_DATA_TYPE_MAX = 22,
     }
 
     public enum TDengineInitOption
@@ -67,48 +74,12 @@ namespace TDengine.Driver
         public string name = string.Empty;
         public int size;
         public byte type;
+        public byte precision;
+        public byte scale;
 
         public string TypeName()
         {
-            switch ((TDengineDataType)type)
-            {
-                case TDengineDataType.TSDB_DATA_TYPE_BOOL:
-                    return "BOOL";
-                case TDengineDataType.TSDB_DATA_TYPE_TINYINT:
-                    return "TINYINT";
-                case TDengineDataType.TSDB_DATA_TYPE_SMALLINT:
-                    return "SMALLINT";
-                case TDengineDataType.TSDB_DATA_TYPE_INT:
-                    return "INT";
-                case TDengineDataType.TSDB_DATA_TYPE_BIGINT:
-                    return "BIGINT";
-                case TDengineDataType.TSDB_DATA_TYPE_UTINYINT:
-                    return "TINYINT UNSIGNED";
-                case TDengineDataType.TSDB_DATA_TYPE_USMALLINT:
-                    return "SMALLINT UNSIGNED";
-                case TDengineDataType.TSDB_DATA_TYPE_UINT:
-                    return "INT UNSIGNED";
-                case TDengineDataType.TSDB_DATA_TYPE_UBIGINT:
-                    return "BIGINT UNSIGNED";
-                case TDengineDataType.TSDB_DATA_TYPE_FLOAT:
-                    return "FLOAT";
-                case TDengineDataType.TSDB_DATA_TYPE_DOUBLE:
-                    return "DOUBLE";
-                case TDengineDataType.TSDB_DATA_TYPE_BINARY:
-                    return "BINARY";
-                case TDengineDataType.TSDB_DATA_TYPE_TIMESTAMP:
-                    return "TIMESTAMP";
-                case TDengineDataType.TSDB_DATA_TYPE_NCHAR:
-                    return "NCHAR";
-                case TDengineDataType.TSDB_DATA_TYPE_JSONTAG:
-                    return "JSON";
-                case TDengineDataType.TSDB_DATA_TYPE_VARBINARY:
-                    return "VARBINARY";
-                case TDengineDataType.TSDB_DATA_TYPE_GEOMETRY:
-                    return "GEOMETRY";
-                default:
-                    return "undefine";
-            }
+            return TDengineConstant.GetFieldTypeName((sbyte)type);
         }
 
         public Type ScanType()
@@ -117,14 +88,35 @@ namespace TDengine.Driver
         }
     }
 
-    public class StmtFields
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TAOS_STMT2_BIND
     {
-        internal string name { get; } = String.Empty;
-        internal sbyte type { get; }
-        internal byte preicision { get; }
-        internal byte scale { get; }
-        internal int bytes { get; }
+        // column type
+        public int buffer_type;
+
+        // array, one or more lines column value
+        public IntPtr buffer;
+
+        //array, actual data length for each value
+        public IntPtr length;
+
+        //array, indicates each column value is null or not
+        public IntPtr is_null;
+
+        // line number, or the values number in buffer 
+        public int num;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TAOS_STMT2_BINDV
+    {
+        public int count; // Number of tables in the statement
+        public IntPtr tbnames; // Pointer to an array of strings (char**)
+        public IntPtr tags; // Pointer to an array of TAOS_STMT2_BIND pointers
+        public IntPtr bind_cols; // Pointer to an array of TAOS_STMT2_BIND pointers
+    }
+
 
     [StructLayout(LayoutKind.Sequential)]
     public struct TAOS_MULTI_BIND
@@ -200,6 +192,27 @@ namespace TDengine.Driver
         public int bytes;
     }
 
+    public enum TaosFieldType
+    {
+        TAOS_FIELD_COL = 1,
+        TAOS_FIELD_TAG,
+        TAOS_FIELD_QUERY,
+        TAOS_FIELD_TBNAME,
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    public struct TaosFieldAll
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 65)]
+        public string name;
+
+        public sbyte type;
+        public byte precision;
+        public byte scale;
+        public int bytes;
+        public byte field_type;
+    }
+
     public enum TDenginePrecision : int
     {
         TSDB_TIME_PRECISION_MILLI = 0,
@@ -209,6 +222,26 @@ namespace TDengine.Driver
 
     public static class TDengineConstant
     {
+        public static readonly string ProcessName = new Lazy<string>(() =>
+        {
+            try
+            {
+                return Process.GetCurrentProcess().ProcessName;
+            }
+            catch
+            {
+                return "dotnet_unknown";
+            }
+        }).Value;
+
+        private static readonly string BaseConnectorInfo =
+            typeof(TDengineConstant)
+                .Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion ?? "unknown";
+
+        public static readonly string WsConnectorInfo = $"csharp-ws-{BaseConnectorInfo}";
+        public static readonly string NativeConnectorInfo = $"csharp-native-{BaseConnectorInfo}";
         public static readonly DateTime TimeZero = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         public static readonly int Int8Size = sizeof(sbyte);
         public static readonly int Int16Size = sizeof(short);
@@ -223,8 +256,23 @@ namespace TDengine.Driver
         public static readonly int ByteSize = sizeof(byte);
         public static readonly int BoolSize = sizeof(bool);
 
+        public static readonly int TaosStmt2BindSize = Marshal.SizeOf(typeof(TAOS_STMT2_BIND));
+
+        // Deprecated: Wrong function name, use ConvertDateTimeToTimestamp instead.
+        [Obsolete("Wrong function name, Use ConvertDateTimeToTimestamp instead.")]
         public static long ConvertDatetimeToTick(DateTime value, TDenginePrecision precision)
         {
+            return ConvertDateTimeToTimestamp(value, precision);
+        }
+
+        public static long ConvertDateTimeToTimestamp(DateTime value, TDenginePrecision precision)
+        {
+            // if kind is unspecified, the `ToUniversalTime` is assumed to be in local time, which may convert to an incorrect UTC time.
+            if (value.Kind == DateTimeKind.Unspecified)
+            {
+                throw new ArgumentException("Datetime Kind must be specified as UTC or Local.");
+            }
+
             switch (precision)
             {
                 case TDenginePrecision.TSDB_TIME_PRECISION_MILLI:
@@ -238,10 +286,25 @@ namespace TDengine.Driver
             }
         }
 
-        public static DateTime ConvertTimeToDatetime(long value, TDenginePrecision precision,
-            TimeZoneInfo tz = default)
+        public static long ConvertDateTimeToTimestamp(DateTime value, TDenginePrecision precision,
+            TimeZoneInfo timezone)
         {
-            if (tz == default)
+            var utcTime = TimeZoneInfo.ConvertTimeToUtc(value, timezone);
+            return ConvertDateTimeToTimestamp(utcTime, precision);
+        }
+
+        // Deprecated: Wrong function name, use ConvertTimestampToDateTime instead.
+        [Obsolete("Wrong function name, Use ConvertTimestampToDateTime instead.")]
+        public static DateTime ConvertTimeToDatetime(long value, TDenginePrecision precision,
+            TimeZoneInfo tz = null)
+        {
+            return ConvertTimestampToDateTime(value, precision, tz);
+        }
+
+        public static DateTime ConvertTimestampToDateTime(long value, TDenginePrecision precision,
+            TimeZoneInfo tz = null)
+        {
+            if (tz == null)
             {
                 tz = TimeZoneInfo.Local;
             }
@@ -259,12 +322,54 @@ namespace TDengine.Driver
             }
         }
 
+        public static DateTimeOffset ConvertTimestampToDateTimeOffset(long value, TDenginePrecision precision,
+            TimeZoneInfo tz)
+        {
+            if (tz == null)
+            {
+                throw new ArgumentNullException(nameof(tz), "TimeZoneInfo cannot be null.");
+            }
+
+            DateTimeOffset utcDateTimeOffset;
+            switch (precision)
+            {
+                case TDenginePrecision.TSDB_TIME_PRECISION_MILLI:
+                    utcDateTimeOffset = new DateTimeOffset(TimeZero.AddTicks(value * 10000));
+                    break;
+                case TDenginePrecision.TSDB_TIME_PRECISION_MICRO:
+                    utcDateTimeOffset = new DateTimeOffset(TimeZero.AddTicks(value * 10));
+                    break;
+                case TDenginePrecision.TSDB_TIME_PRECISION_NANO:
+                    utcDateTimeOffset = new DateTimeOffset(TimeZero.AddTicks(value / 100));
+                    break;
+                default:
+                    throw new NotSupportedException($"unknown precision {precision}");
+            }
+
+            return TimeZoneInfo.ConvertTime(utcDateTimeOffset, tz);
+        }
+
+        public static long ConvertDateTimeOffsetToTimestamp(DateTimeOffset value, TDenginePrecision precision)
+        {
+            switch (precision)
+            {
+                case TDenginePrecision.TSDB_TIME_PRECISION_MILLI:
+                    return (value.UtcTicks - TimeZero.Ticks) / 10000;
+                case TDenginePrecision.TSDB_TIME_PRECISION_MICRO:
+                    return (value.UtcTicks - TimeZero.Ticks) / 10;
+                case TDenginePrecision.TSDB_TIME_PRECISION_NANO:
+                    return (value.UtcTicks - TimeZero.Ticks) * 100;
+                default:
+                    throw new NotSupportedException($"unknown precision {precision}");
+            }
+        }
+
         public static int BitmapLen(int n) => (n + ((1 << 3) - 1)) >> 3;
         public static int BitPos(int n) => n & ((1 << 3) - 1);
         public static int CharOffset(int n) => n >> 3;
         public static bool BitmapIsNull(byte c, int n) => (c & (1 << (7 - BitPos(n)))) == (1 << (7 - BitPos(n)));
 
-        public static Dictionary<TDengineDataType, int> TypeLengthMap = new Dictionary<TDengineDataType, int>
+        public static readonly Dictionary<TDengineDataType, int> TypeLengthMap = new Dictionary<TDengineDataType, int>
         {
             { TDengineDataType.TSDB_DATA_TYPE_NULL, 1 },
             { TDengineDataType.TSDB_DATA_TYPE_BOOL, 1 },
@@ -346,6 +451,12 @@ namespace TDengine.Driver
                     return typeof(byte[]);
                 case TDengineDataType.TSDB_DATA_TYPE_GEOMETRY:
                     return typeof(byte[]);
+                case TDengineDataType.TSDB_DATA_TYPE_BLOB:
+                    return typeof(byte[]);
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL64:
+                    return typeof(decimal);
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL:
+                    return typeof(decimal);
                 default:
                     return typeof(DBNull);
             }
@@ -384,15 +495,111 @@ namespace TDengine.Driver
                 case TDengineDataType.TSDB_DATA_TYPE_NCHAR:
                     return typeof(string);
                 case TDengineDataType.TSDB_DATA_TYPE_JSONTAG:
-                    return typeof(byte[]);
                 case TDengineDataType.TSDB_DATA_TYPE_VARBINARY:
-                    return typeof(byte[]);
                 case TDengineDataType.TSDB_DATA_TYPE_GEOMETRY:
+                case TDengineDataType.TSDB_DATA_TYPE_BLOB:
                     return typeof(byte[]);
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL64:
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL:
+                    return typeof(string);
                 default:
                     return typeof(DBNull);
             }
         }
+
+        public static string GetFieldTypeName(sbyte type)
+        {
+            switch ((TDengineDataType)type)
+            {
+                case TDengineDataType.TSDB_DATA_TYPE_BOOL:
+                    return "BOOL";
+                case TDengineDataType.TSDB_DATA_TYPE_TINYINT:
+                    return "TINYINT";
+                case TDengineDataType.TSDB_DATA_TYPE_SMALLINT:
+                    return "SMALLINT";
+                case TDengineDataType.TSDB_DATA_TYPE_INT:
+                    return "INT";
+                case TDengineDataType.TSDB_DATA_TYPE_BIGINT:
+                    return "BIGINT";
+                case TDengineDataType.TSDB_DATA_TYPE_UTINYINT:
+                    return "TINYINT UNSIGNED";
+                case TDengineDataType.TSDB_DATA_TYPE_USMALLINT:
+                    return "SMALLINT UNSIGNED";
+                case TDengineDataType.TSDB_DATA_TYPE_UINT:
+                    return "INT UNSIGNED";
+                case TDengineDataType.TSDB_DATA_TYPE_UBIGINT:
+                    return "BIGINT UNSIGNED";
+                case TDengineDataType.TSDB_DATA_TYPE_FLOAT:
+                    return "FLOAT";
+                case TDengineDataType.TSDB_DATA_TYPE_DOUBLE:
+                    return "DOUBLE";
+                case TDengineDataType.TSDB_DATA_TYPE_BINARY:
+                    return "BINARY";
+                case TDengineDataType.TSDB_DATA_TYPE_TIMESTAMP:
+                    return "TIMESTAMP";
+                case TDengineDataType.TSDB_DATA_TYPE_NCHAR:
+                    return "NCHAR";
+                case TDengineDataType.TSDB_DATA_TYPE_JSONTAG:
+                    return "JSON";
+                case TDengineDataType.TSDB_DATA_TYPE_VARBINARY:
+                    return "VARBINARY";
+                case TDengineDataType.TSDB_DATA_TYPE_GEOMETRY:
+                    return "GEOMETRY";
+                case TDengineDataType.TSDB_DATA_TYPE_BLOB:
+                    return "BLOB";
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL64:
+                    return "DECIMAL";
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL:
+                    return "DECIMAL";
+                default:
+                    return "undefine";
+            }
+        }
+
+        public static TaosFieldE ConvertToTaosFieldE(TaosFieldAll source)
+        {
+            return new TaosFieldE
+            {
+                name = source.name,
+                type = source.type,
+                precision = source.precision,
+                scale = source.scale,
+                bytes = source.bytes
+            };
+        }
+
+        public static bool IsVarDataType(byte colType)
+        {
+            switch ((TDengineDataType)colType)
+            {
+                case TDengineDataType.TSDB_DATA_TYPE_BINARY:
+                case TDengineDataType.TSDB_DATA_TYPE_NCHAR:
+                case TDengineDataType.TSDB_DATA_TYPE_JSONTAG:
+                case TDengineDataType.TSDB_DATA_TYPE_VARBINARY:
+                case TDengineDataType.TSDB_DATA_TYPE_GEOMETRY:
+                case TDengineDataType.TSDB_DATA_TYPE_BLOB:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        // Stmt2 protocol treats DECIMAL/DECIMAL64 as variable-length string data
+        // because server only accepts string binding for decimal types.
+        // This must NOT be used by BlockReader (which treats decimal as fixed-length).
+        public static bool IsStmtVarDataType(byte colType)
+        {
+            if (IsVarDataType(colType)) return true;
+            switch ((TDengineDataType)colType)
+            {
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL:
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL64:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        
     }
 
     public enum TMQ_CONF_RES
@@ -430,4 +637,16 @@ namespace TDengine.Driver
         public uint rawLen;
         public ushort rawType;
     }
+
+    public enum TSDB_OPTION_CONNECTION
+    {
+        TSDB_OPTION_CONNECTION_CLEAR = -1, // means clear all option in this connection
+        TSDB_OPTION_CONNECTION_CHARSET, // charset, Same as the scope supported by the system
+        TSDB_OPTION_CONNECTION_TIMEZONE, // timezone, Same as the scope supported by the system
+        TSDB_OPTION_CONNECTION_USER_IP, // user ip
+        TSDB_OPTION_CONNECTION_USER_APP, // user app, max lengthe is 23, truncated if longer than 23
+        TSDB_OPTION_CONNECTION_CONNECTOR_INFO, // connector info, max lengthe is 255, truncated if longer than 255
+        TSDB_MAX_OPTIONS_CONNECTION
+    }
+
 }

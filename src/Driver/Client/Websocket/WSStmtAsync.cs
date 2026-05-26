@@ -1,263 +1,286 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver.Impl.WebSocketMethods;
-using TDengine.Driver.Impl.WebSocketMethods.Protocol;
 
 namespace TDengine.Driver.Client.Websocket
 {
-#if NETSTANDARD2_1_OR_GREATER
-public class WSStmtAsync : IStmtAsync, IAsyncDisposable
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
+    public class WSStmtAsync : AbstractStmt, IStmtAsync, IAsyncDisposable
 #else
-    public class WSStmtAsync : IStmtAsync, IDisposable
+    public class WSStmtAsync : AbstractStmt, IStmtAsync, IDisposable
 #endif
-
     {
-        private ulong _stmt;
-
+        private readonly WSClientAsync _client;
         private readonly TimeZoneInfo _tz;
-
         private ConnectionAsync _connection;
+        private ulong _stmt;
+        private int _closed;
 
-        private bool _closed;
-
-        private long _lastAffected;
-
-        private bool _isInsert;
-
-        public WSStmtAsync(ulong stmt, TimeZoneInfo tz, ConnectionAsync connection)
+        public WSStmtAsync(WSClientAsync client, ulong stmt, TimeZoneInfo tz, ConnectionAsync connection) : base(30)
         {
+            _client = client;
             _stmt = stmt;
             _tz = tz;
             _connection = connection;
         }
 
-
-
-#if NETSTANDARD2_1_OR_GREATER
-public async ValueTask DisposeAsync()
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
+        public async ValueTask DisposeAsync()
         {
-            if (!_closed)
-            {
-                await _connection.StmtCloseAsync(_stmt);
-                _closed = true;
-            }
+            await CloseAsync().ConfigureAwait(false);
         }
 #else
-        public void Dispose()
+        public override void Dispose()
         {
-            if (!_closed)
-            {
-                _ = _connection.StmtCloseAsync(_stmt);
-                _closed = true;
-            }
+            CloseAsync().GetAwaiter().GetResult();
         }
 #endif
 
-
-        public async Task PrepareAsync(string query)
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
+        public override void Dispose()
         {
-            var resp = await _connection.StmtPrepareAsync(_stmt, query);
-            _isInsert = resp.IsInsert;
+            CloseAsync().GetAwaiter().GetResult();
         }
+#endif
 
-        public bool IsInsert()
+        private async Task CloseAsync()
         {
-            return _isInsert;
-        }
+            if (Interlocked.Exchange(ref _closed, 1) == 1) return;
 
-        public async Task SetTableNameAsync(string tableName)
-        {
-            await _connection.StmtSetTableNameAsync(_stmt, tableName);
-        }
-
-        public async Task SetTagsAsync(object[] tags)
-        {
-            var fields = await GetTagFieldsAsync();
-            await _connection.StmtSetTagsAsync(_stmt, fields, tags);
-        }
-
-        public async Task<TaosFieldE[]> GetTagFieldsAsync()
-        {
-            var resp = await _connection.StmtGetTagFieldsAsync(_stmt);
-            TaosFieldE[] fields = new TaosFieldE[resp.Fields.Count];
-            for (int i = 0; i < resp.Fields.Count; i++)
+            if (_connection == null || !_connection.IsAvailable()) return;
+            try
             {
-                fields[i] = new TaosFieldE
+                await _connection.Stmt2CloseAsync(_stmt).ConfigureAwait(false);
+            }
+            catch
+            {
+                // ignored
+            }
+            finally
+            {
+                _connection = null;
+            }
+        }
+
+        public Task PrepareAsync(string query)
+        {
+            return PrepareAsync(query, CancellationToken.None);
+        }
+
+        public async Task PrepareAsync(string query, CancellationToken cancellationToken)
+        {
+            bool isInsert;
+            int count;
+            TaosFieldAll[] fields;
+            try
+            {
+                var resp = await _connection.Stmt2PrepareAsync(_stmt, query, cancellationToken).ConfigureAwait(false);
+                ConvertPrepareResponse(resp, out isInsert, out count, out fields);
+            }
+            catch (Exception e)
+            {
+                if (!_client.AutoReconnect || IsConnectionAvailable(e)) throw;
+                await ReconnectInternalAsync(cancellationToken).ConfigureAwait(false);
+                var resp = await _connection.Stmt2PrepareAsync(_stmt, query, cancellationToken).ConfigureAwait(false);
+                ConvertPrepareResponse(resp, out isInsert, out count, out fields);
+            }
+
+            ApplyPrepareResult(query, isInsert, count, fields);
+        }
+
+        private static void ConvertPrepareResponse(Impl.WebSocketMethods.Protocol.WSStmt2PrepareResp resp,
+            out bool isInsert, out int count, out TaosFieldAll[] fields)
+        {
+            isInsert = resp.IsInsert;
+            count = resp.FieldsCount;
+            if (!isInsert)
+            {
+                fields = null;
+                return;
+            }
+
+            fields = new TaosFieldAll[resp.Fields.Count];
+            for (var i = 0; i < resp.Fields.Count; i++)
+            {
+                fields[i] = new TaosFieldAll
                 {
                     name = resp.Fields[i].Name,
                     type = resp.Fields[i].FieldType,
                     precision = resp.Fields[i].Precision,
                     scale = resp.Fields[i].Scale,
-                    bytes = resp.Fields[i].Bytes
+                    bytes = resp.Fields[i].Bytes,
+                    field_type = resp.Fields[i].BindType
                 };
             }
-
-            return fields;
         }
 
-        public async Task<TaosFieldE[]> GetColFieldsAsync()
+        public Task SetTableNameAsync(string tableName)
         {
-            var resp = await _connection.StmtGetColFieldsAsync(_stmt);
-            TaosFieldE[] fields = new TaosFieldE[resp.Fields.Count];
-            for (int i = 0; i < resp.Fields.Count; i++)
+            SetTableName(tableName);
+            return Task.FromResult(0);
+        }
+
+        public Task SetTableNameAsync(string tableName, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return SetTableNameAsync(tableName);
+        }
+
+        public Task SetTagsAsync(object[] tags)
+        {
+            SetTags(tags);
+            return Task.FromResult(0);
+        }
+
+        public Task SetTagsAsync(object[] tags, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return SetTagsAsync(tags);
+        }
+
+        public Task<TaosFieldE[]> GetTagFieldsAsync()
+        {
+            return Task.FromResult(GetTagFields());
+        }
+
+        public Task<TaosFieldE[]> GetColFieldsAsync()
+        {
+            return Task.FromResult(GetColFields());
+        }
+
+        public Task BindRowAsync(object[] row)
+        {
+            BindRow(row);
+            return Task.FromResult(0);
+        }
+
+        public Task BindRowAsync(object[] row, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return BindRowAsync(row);
+        }
+
+        public Task BindColumnAsync(TaosFieldE[] fields, params Array[] arrays)
+        {
+            BindColumn(fields, arrays);
+            return Task.FromResult(0);
+        }
+
+        public Task BindColumnAsync(TaosFieldE[] fields, CancellationToken cancellationToken, params Array[] arrays)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return BindColumnAsync(fields, arrays);
+        }
+
+        public Task AddBatchAsync()
+        {
+            AddBatch();
+            return Task.FromResult(0);
+        }
+
+        public Task AddBatchAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return AddBatchAsync();
+        }
+
+        public Task ExecAsync()
+        {
+            return ExecAsync(CancellationToken.None);
+        }
+
+        public async Task ExecAsync(CancellationToken cancellationToken)
+        {
+            var buffer = GenerateBindBinaryForExecution();
+            int affectedRows;
+            try
             {
-                fields[i] = new TaosFieldE
-                {
-                    name = resp.Fields[i].Name,
-                    type = resp.Fields[i].FieldType,
-                    precision = resp.Fields[i].Precision,
-                    scale = resp.Fields[i].Scale,
-                    bytes = resp.Fields[i].Bytes
-                };
+                affectedRows = await BindBinaryInternalAsync(buffer, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                if (!_client.AutoReconnect || IsConnectionAvailable(e)) throw;
+                await ReconnectInternalAsync(cancellationToken).ConfigureAwait(false);
+                var resp = await _connection.Stmt2PrepareAsync(_stmt, PreparedSql, cancellationToken)
+                    .ConfigureAwait(false);
+                ConvertPrepareResponse(resp, out var insert, out var count, out var fields);
+                ValidateRePrepareResult(insert, count, fields);
+                affectedRows = await BindBinaryInternalAsync(buffer, cancellationToken).ConfigureAwait(false);
             }
 
-            return fields;
+            CompleteExecution(affectedRows);
         }
 
-        public async Task BindRowAsync(object[] row)
+        public Task<IRowsAsync> ResultAsync()
         {
+            return ResultAsync(CancellationToken.None);
+        }
+
+        public async Task<IRowsAsync> ResultAsync(CancellationToken cancellationToken)
+        {
+            CheckExecuted();
             if (IsInsert())
             {
-                await _connection.StmtBindAsync(_stmt, await GetColFieldsAsync(), row);
-            }
-            else
-            {
-                var tmpRow = new object[row.Length];
-                Array.Copy(row, tmpRow, row.Length);
-                await _connection.StmtBindAsync(_stmt, GenerateStmtQueryColFields(tmpRow), tmpRow);
-            }
-        }
-
-        private TaosFieldE[] GenerateStmtQueryColFields(object[] row)
-        {
-            var result = new TaosFieldE[row.Length];
-            for (int i = 0; i < row.Length; i++)
-            {
-                switch (row[i])
-                {
-                    case bool _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BOOL
-                        };
-                        break;
-                    case sbyte _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_TINYINT
-                        };
-                        break;
-                    case short _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_SMALLINT
-                        };
-                        break;
-                    case int _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_INT
-                        };
-                        break;
-                    case long _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BIGINT
-                        };
-                        break;
-                    case byte _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_UTINYINT
-                        };
-                        break;
-                    case ushort _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_USMALLINT
-                        };
-                        break;
-                    case uint _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_UINT
-                        };
-                        break;
-                    case ulong _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_UBIGINT
-                        };
-                        break;
-                    case float _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_FLOAT
-                        };
-                        break;
-                    case double _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_DOUBLE
-                        };
-                        break;
-                    case byte[] _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BINARY
-                        };
-                        break;
-                    case DateTime val:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BINARY
-                        };
-                        var time = val.ToString("yyyy-MM-dd'T'HH:mm:ss.fffK");
-                        row[i] = time;
-                        break;
-                    case string _:
-                        result[i] = new TaosFieldE
-                        {
-                            type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BINARY
-                        };
-                        break;
-                    default:
-                        throw new ArgumentException("Unsupported type, only support basic types and DateTime");
-                }
+                return new WSRowsAsync((int)Affected());
             }
 
-            return result;
+            var resp = await _connection.Stmt2UseResultAsync(_stmt, cancellationToken).ConfigureAwait(false);
+            return new WSRowsAsync(resp.ResultId, resp, _connection, _tz);
         }
 
-        public async Task BindColumnAsync(TaosFieldE[] field, params Array[] arrays)
+        protected override void PrepareInternal(string query, out bool isInsert, out int count, out TaosFieldAll[] fields)
         {
-            await _connection.StmtBindAsync(_stmt, field, arrays);
+            var resp = _connection.Stmt2PrepareAsync(_stmt, query).GetAwaiter().GetResult();
+            ConvertPrepareResponse(resp, out isInsert, out count, out fields);
         }
 
-        public async Task AddBatchAsync()
+        protected override void BindBinaryInternal(byte[] data, out int affectedRows)
         {
-            await _connection.StmtAddBatchAsync(_stmt);
+            affectedRows = BindBinaryInternalAsync(data, CancellationToken.None).GetAwaiter().GetResult();
         }
 
-        public async Task ExecAsync()
+        private async Task<int> BindBinaryInternalAsync(byte[] data, CancellationToken cancellationToken)
         {
-            var resp = await _connection.StmtExecAsync(_stmt);
-            _lastAffected = resp.Affected;
+            await _connection.Stmt2BindAsync(_stmt, data, cancellationToken).ConfigureAwait(false);
+            var resp = await _connection.Stmt2ExecAsync(_stmt, cancellationToken).ConfigureAwait(false);
+            return resp.Affected;
         }
 
-        public long Affected()
+        protected override bool IsConnectionAvailable(Exception exception)
         {
-            return _lastAffected;
+            return _connection != null && _connection.IsAvailable(exception);
         }
 
-        public async Task<IRowsAsync> ResultAsync()
+        protected override void ReconnectInternal()
         {
-            if (IsInsert())
-            {
-                return new WSRowsAsync((int)_lastAffected);
-            }
-            var resp = await _connection.StmtUseResultAsync(_stmt);
-            return new WSRowsAsync(resp, _connection, _tz);
+            ReconnectInternalAsync(CancellationToken.None).GetAwaiter().GetResult();
+        }
+
+        private async Task ReconnectInternalAsync(CancellationToken cancellationToken)
+        {
+            _stmt = 0;
+            var newConnection = await _client.TryReconnectOrGetConnectionAsync(_connection, cancellationToken)
+                .ConfigureAwait(false);
+            _connection = newConnection;
+            var resp = await _connection.Stmt2InitAsync((ulong)ReqId.GetReqId(), cancellationToken)
+                .ConfigureAwait(false);
+            _stmt = resp.StmtId;
+        }
+
+        protected override bool AutoReconnectInternal()
+        {
+            return _client.AutoReconnect;
+        }
+
+        protected override IRows QueryResultInternal()
+        {
+            throw new NotSupportedException("Use ResultAsync for asynchronous statements.");
+        }
+
+        protected override IRows InsertResultInternal(int affectedRows)
+        {
+            throw new NotSupportedException("Use ResultAsync for asynchronous statements.");
         }
     }
 }

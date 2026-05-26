@@ -1,4 +1,5 @@
-﻿using TDengine.Data.Client;
+﻿using System;
+using TDengine.Data.Client;
 using TDengine.Driver;
 using Xunit;
 
@@ -91,6 +92,31 @@ namespace Data.Tests
             Assert.True(builder.AutoReconnect);
             Assert.Equal(10, builder.ReconnectIntervalMs);
             Assert.Equal(5, builder.ReconnectRetryCount);
+        }
+
+        [Fact]
+        public void ParseWebSocket_Official321Options()
+        {
+            var builder = new TDengineConnectionStringBuilder(
+                "host=192.168.1.18:6341,192.168.1.19:6341;" +
+                "username=root;" +
+                "password=taosdata;" +
+                "protocol=WebSocket;" +
+                "bearerToken=token-value;" +
+                "connectionTimezone=UTC");
+
+            Assert.Equal("192.168.1.18:6341,192.168.1.19:6341", builder.Host);
+            Assert.Equal("token-value", builder.BearerToken);
+            Assert.Equal("UTC", builder.ConnectionTimezone.Id);
+        }
+
+        [Fact]
+        public void ParseWebSocket_RejectsBothTimezoneOptions()
+        {
+            var ex = Assert.Throws<ArgumentException>(() => new TDengineConnectionStringBuilder(
+                "protocol=WebSocket;host=192.168.1.18;timezone=UTC;connectionTimezone=UTC"));
+
+            Assert.Contains("connectionTimezone and timezone", ex.Message);
         }
     }
 }

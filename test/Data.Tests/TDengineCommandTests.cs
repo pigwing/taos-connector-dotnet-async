@@ -12,7 +12,7 @@ namespace Data.Tests
 
         public TDengineCommandTests()
         {
-            _connection = new TDengineConnection("username=root;password=taosdata");
+            _connection = new TDengineConnection(TestConnectionOptions.NativeConnectionString());
             _connection.Open();
             using (var command = new TDengineCommand(_connection))
             {
@@ -26,9 +26,7 @@ namespace Data.Tests
                 command.Parameters.AddWithValue(123);
             }
 
-            _wsConnection =
-                new TDengineConnection(
-                    "username=root;password=taosdata;protocol=WebSocket;host=localhost;port=6041;useSSL=false");
+            _wsConnection = new TDengineConnection(TestConnectionOptions.WebSocketConnectionString());
             _wsConnection.Open();
             using (var command = new TDengineCommand(_wsConnection))
             {
@@ -78,7 +76,7 @@ namespace Data.Tests
             //CASE 2: Set an connection that is not yet open.
             using(var command = new TDengineCommand())
             {
-                using(var connection = new TDengineConnection("username=root;password=taosdata"))
+                using(var connection = new TDengineConnection(TestConnectionOptions.NativeConnectionString()))
                 {
                     command.CommandText = "SELECT * FROM t";
                     var ex = Record.Exception(() => command.Connection = connection);
