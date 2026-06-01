@@ -26,14 +26,49 @@ namespace TDengine.Driver.Client
         public static async Task<ITDengineClientAsync> OpenAsync(ConnectionStringBuilder builder,
             CancellationToken cancellationToken)
         {
+            if (builder == null) throw new ArgumentNullException(nameof(builder));
             if (builder.Protocol == TDengineConstant.ProtocolWebSocket)
             {
+                if (builder.Pooling)
+                {
+                    return await WSClientAsyncPoolRegistry.AcquireAsync(builder, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
                 var client = new WSClientAsync(builder);
                 await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
                 return client;
             }
 
             throw new NotImplementedException("Native async is not implemented");
+        }
+
+        public static WSClientAsyncPool CreateWebSocketAsyncPool(ConnectionStringBuilder builder)
+        {
+            return CreateWebSocketAsyncPool(builder, null);
+        }
+
+        public static WSClientAsyncPool CreateWebSocketAsyncPool(ConnectionStringBuilder builder,
+            WSClientAsyncPoolOptions options)
+        {
+            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            if (builder.Protocol != TDengineConstant.ProtocolWebSocket)
+            {
+                throw new ArgumentException("WebSocket async pool requires WebSocket protocol.", nameof(builder));
+            }
+
+            return new WSClientAsyncPool(builder, options);
+        }
+
+        public static WSClientAsyncPoolMetrics GetWebSocketAsyncPoolMetrics(ConnectionStringBuilder builder)
+        {
+            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            return WSClientAsyncPoolRegistry.GetMetrics(builder);
+        }
+
+        public static void ClearWebSocketAsyncPools()
+        {
+            WSClientAsyncPoolRegistry.Clear();
         }
     }
 }

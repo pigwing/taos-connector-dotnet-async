@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 
 namespace TDengine.Driver.Client
 {
@@ -45,6 +45,9 @@ namespace TDengine.Driver.Client
         
         private readonly Queue<List<object>> _objectListQueue = new Queue<List<object>>();
         private readonly Queue<Stmt2TableData> _tableInfoQueue = new Queue<Stmt2TableData>();
+        private const int MaxCachedObjectLists = 256;
+        private const int MaxCachedTableInfos = 64;
+        private const int MaxCachedObjectListCapacity = 4096;
         
         // after prepare or add batch, get a new table info
         private Stmt2TableData GetStmt2TableData()
@@ -67,9 +70,14 @@ namespace TDengine.Driver.Client
             for (var i = 0; i < info.Cols.Length; i++)
             {
                 // get from cache or create new
-                info.Cols[i] = _objectListQueue.Count > 0 ? _objectListQueue.Dequeue() : new List<object>();
+                info.Cols[i] = GetObjectList();
             }
             return info;
+        }
+
+        private List<object> GetObjectList()
+        {
+            return _objectListQueue.Count > 0 ? _objectListQueue.Dequeue() : new List<object>();
         }
         
         // after execute, put table info to cache
@@ -80,14 +88,26 @@ namespace TDengine.Driver.Client
             for (var i = 0; i < info.Cols.Length; i++)
             {
                 var list = info.Cols[i];
+                if (list == null)
+                {
+                    continue;
+                }
+
                 list.Clear();
-                _objectListQueue.Enqueue(list);
+                if (list.Capacity <= MaxCachedObjectListCapacity &&
+                    _objectListQueue.Count < MaxCachedObjectLists)
+                {
+                    _objectListQueue.Enqueue(list);
+                }
                 info.Cols[i] = null;
             }
             info.Tags = null;
             info.TableName = string.Empty;
             // return to cache
-            _tableInfoQueue.Enqueue(info);
+            if (_tableInfoQueue.Count < MaxCachedTableInfos)
+            {
+                _tableInfoQueue.Enqueue(info);
+            }
         }
         
         protected AbstractStmt(int binaryHeaderLength = 0)
@@ -122,6 +142,7 @@ namespace TDengine.Driver.Client
         {
             _isTableNameSet = false;
             _isTagsSet = false;
+            _isColSet = false;
             _currentTableInfo = GetStmt2TableData();
         }
         

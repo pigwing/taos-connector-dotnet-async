@@ -124,6 +124,7 @@ namespace TDengine.Driver.Client.Websocket
             }
 
             oldLease?.Dispose();
+            _reconnectLock.Dispose();
         }
 
         private bool IsDisposed()
@@ -319,6 +320,7 @@ namespace TDengine.Driver.Client.Websocket
 
             ThrowIfDisposed();
             await _reconnectLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            FailoverAddress preferredAddress;
             try
             {
                 if (_connection != null && _connection.IsAvailable())
@@ -333,13 +335,14 @@ namespace TDengine.Driver.Client.Websocket
                         return;
                     }
                 }
+
+                preferredAddress = _addressLease == null ? null : _addressLease.Address;
             }
             finally
             {
                 _reconnectLock.Release();
             }
 
-            var preferredAddress = _addressLease == null ? null : _addressLease.Address;
             if (!await TryOpenAsync(_failoverAddresses, _builder.ReconnectRetryCount,
                     _builder.ReconnectIntervalMs, true, preferredAddress, cancellationToken, old, force)
                     .ConfigureAwait(false))

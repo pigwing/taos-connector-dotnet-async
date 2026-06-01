@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.ExceptionServices;
@@ -1139,6 +1139,89 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
                     if (cleanupClient.ConnectionAvailable())
                     {
                         await cleanupClient.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private async Task StmtMultipleAddBatchDirectTableAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await client.ExecAsync($"drop database if exists {db}");
+                    await client.ExecAsync($"create database {db}");
+                    await client.ExecAsync($"use {db}");
+                    await client.ExecAsync("create table test_stmt_multi_batch(ts timestamp, c1 int)");
+
+                    using (var stmt = await client.StmtInitAsync())
+                    {
+                        await stmt.PrepareAsync("insert into test_stmt_multi_batch values(?,?)");
+                        await stmt.BindRowAsync(new object[] { DateTime.UtcNow, 1 });
+                        await stmt.AddBatchAsync();
+                        await stmt.BindRowAsync(new object[] { DateTime.UtcNow.AddMilliseconds(1), 2 });
+                        await stmt.AddBatchAsync();
+                        await stmt.ExecAsync();
+                        Assert.Equal(2, stmt.Affected());
+                    }
+
+                    using (var rows = await client.QueryAsync("select c1 from test_stmt_multi_batch order by c1"))
+                    {
+                        Assert.True(await rows.ReadAsync());
+                        Assert.Equal(1, rows.GetInt32(0));
+                        Assert.True(await rows.ReadAsync());
+                        Assert.Equal(2, rows.GetInt32(0));
+                        Assert.False(await rows.ReadAsync());
+                    }
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+                finally
+                {
+                    if (client.ConnectionAvailable())
+                    {
+                        await client.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private async Task StmtAddBatchResetsColumnStateAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await client.ExecAsync($"drop database if exists {db}");
+                    await client.ExecAsync($"create database {db}");
+                    await client.ExecAsync($"use {db}");
+                    await client.ExecAsync("create table test_stmt_add_batch_state(ts timestamp, c1 int)");
+
+                    using (var stmt = await client.StmtInitAsync())
+                    {
+                        await stmt.PrepareAsync("insert into test_stmt_add_batch_state values(?,?)");
+                        await stmt.BindRowAsync(new object[] { DateTime.UtcNow, 1 });
+                        await stmt.AddBatchAsync();
+
+                        await Assert.ThrowsAsync<InvalidOperationException>(() => stmt.AddBatchAsync());
+                    }
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+                finally
+                {
+                    if (client.ConnectionAvailable())
+                    {
+                        await client.ExecAsync($"drop database if exists {db}");
                     }
                 }
             }

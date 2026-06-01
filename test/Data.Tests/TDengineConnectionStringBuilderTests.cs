@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using TDengine.Data.Client;
 using TDengine.Driver;
 using Xunit;
@@ -92,6 +92,58 @@ namespace Data.Tests
             Assert.True(builder.AutoReconnect);
             Assert.Equal(10, builder.ReconnectIntervalMs);
             Assert.Equal(5, builder.ReconnectRetryCount);
+        }
+
+        [Fact]
+        public void ParseWebSocketPoolingOptions()
+        {
+            var builder = new TDengineConnectionStringBuilder(
+                "protocol=WebSocket;" +
+                "host=127.0.0.1;" +
+                "pooling=true;" +
+                "min pool size=2;" +
+                "maximumPoolSize=8;" +
+                "connectionTimeout=1500ms;" +
+                "keepaliveTime=45s;" +
+                "maxLifetime=30m;" +
+                "housekeepingInterval=5s;" +
+                "creationRetryBackoff=25ms;" +
+                "maxCreationRetryBackoff=1s;" +
+                "leakDetectionThreshold=10s");
+
+            Assert.True(builder.Pooling);
+            Assert.Equal(2, builder.MinPoolSize);
+            Assert.Equal(8, builder.MaxPoolSize);
+            Assert.Equal(TimeSpan.FromMilliseconds(1500), builder.PoolConnectionTimeout);
+            Assert.Equal(TimeSpan.FromSeconds(45), builder.PoolKeepaliveTime);
+            Assert.Equal(TimeSpan.FromMinutes(30), builder.PoolMaxLifetime);
+            Assert.Equal(TimeSpan.FromSeconds(5), builder.PoolHousekeepingInterval);
+            Assert.Equal(TimeSpan.FromMilliseconds(25), builder.PoolCreationRetryBackoff);
+            Assert.Equal(TimeSpan.FromSeconds(1), builder.PoolMaxCreationRetryBackoff);
+            Assert.Equal(TimeSpan.FromSeconds(10), builder.PoolLeakDetectionThreshold);
+            Assert.True(builder.TryGetValue("maxPoolSize", out var maxPoolSize));
+            Assert.Equal(8, maxPoolSize);
+        }
+
+        [Fact]
+        public void PoolingOptions_ResetWithRemoveAndClear()
+        {
+            var builder = new TDengineConnectionStringBuilder(
+                "protocol=WebSocket;host=127.0.0.1;pooling=true;minPoolSize=1;maxPoolSize=3");
+
+            Assert.True(builder.Remove("pooling"));
+            Assert.False(builder.Pooling);
+            Assert.True(builder.Remove("max pool size"));
+            Assert.Equal(10, builder.MaxPoolSize);
+
+            builder.Clear();
+
+            Assert.False(builder.Pooling);
+            Assert.Equal(0, builder.MinPoolSize);
+            Assert.Equal(10, builder.MaxPoolSize);
+            Assert.Equal(TimeSpan.FromSeconds(30), builder.PoolConnectionTimeout);
+            Assert.Equal(TimeSpan.FromMinutes(2), builder.PoolKeepaliveTime);
+            Assert.Equal(TimeSpan.FromMinutes(30), builder.PoolMaxLifetime);
         }
 
         [Fact]

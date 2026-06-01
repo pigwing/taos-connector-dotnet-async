@@ -217,10 +217,10 @@ namespace TDengine.Driver.Client.Websocket
         public async Task ExecAsync(CancellationToken cancellationToken)
         {
             ThrowIfClosed();
-            var buffer = GenerateBindBinaryForExecution();
             int affectedRows;
             try
             {
+                var buffer = GenerateBindBinaryForExecution();
                 try
                 {
                     affectedRows = await BindBinaryInternalAsync(buffer, cancellationToken).ConfigureAwait(false);

@@ -22,6 +22,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             new ConcurrentDictionary<ulong, TaskCompletionSource<WsMessage>>();
         private readonly SemaphoreSlim _sendSemaphore = new SemaphoreSlim(1, 1);
         private readonly CancellationTokenSource _closeCts = new CancellationTokenSource();
+        private readonly CancellationToken _closeToken;
         private readonly object _exitLock = new object();
         private Task _receiveLoopTask;
         private bool _exit;
@@ -37,6 +38,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         protected BaseConnectionAsync(string addr, TimeSpan connectTimeout = default,
             TimeSpan readTimeout = default, TimeSpan writeTimeout = default, bool enableCompression = false)
         {
+            _closeToken = _closeCts.Token;
             _client = new ClientWebSocket();
             _client.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
 #if NET6_0_OR_GREATER
@@ -374,7 +376,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
 
             using (var timeoutCts = new CancellationTokenSource(_readTimeout))
-            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken, _closeCts.Token))
+            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken, _closeToken))
             using (linkedCts.Token.Register(() =>
                    {
                        if (_pendingRequests.TryRemove(reqId, out var removedTcs))
@@ -389,7 +391,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 }
                 catch (TaskCanceledException)
                 {
-                    if (_closeCts.IsCancellationRequested)
+                    if (_closeToken.IsCancellationRequested)
                     {
                         throw new TDengineError((int)TDengineError.InternalErrorCode.WS_CONNECTION_CLOSED,
                             "websocket connection is closed");
@@ -415,7 +417,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
 
             using (var timeoutCts = new CancellationTokenSource(_writeTimeout))
-            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken, _closeCts.Token))
+            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken, _closeToken))
             {
                 try
                 {
@@ -423,7 +425,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 }
                 catch (OperationCanceledException)
                 {
-                    if (_closeCts.IsCancellationRequested)
+                    if (_closeToken.IsCancellationRequested)
                     {
                         throw new TDengineError((int)TDengineError.InternalErrorCode.WS_CONNECTION_CLOSED,
                             "websocket connection is closed");
@@ -471,7 +473,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         private async Task WaitSendSemaphoreAsync(CancellationToken cancellationToken)
         {
             using (var timeoutCts = new CancellationTokenSource(_writeTimeout))
-            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken, _closeCts.Token))
+            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken, _closeToken))
             {
                 try
                 {
@@ -479,7 +481,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 }
                 catch (OperationCanceledException)
                 {
-                    if (_closeCts.IsCancellationRequested)
+                    if (_closeToken.IsCancellationRequested)
                     {
                         throw new TDengineError((int)TDengineError.InternalErrorCode.WS_CONNECTION_CLOSED,
                             "websocket connection is closed");
@@ -520,7 +522,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     DispatchResponse(message.Bytes, message.MessageType);
                 }
             }
-            catch (OperationCanceledException) when (_closeCts.IsCancellationRequested)
+            catch (OperationCanceledException) when (_closeToken.IsCancellationRequested)
             {
                 // Expected when CloseAsync/DisposeAsync wakes the background receive loop.
             }
@@ -579,7 +581,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
         private bool IsExpectedLocalCloseException(Exception exception)
         {
-            if (!_closeCts.IsCancellationRequested)
+            if (!_closeToken.IsCancellationRequested)
             {
                 return false;
             }
@@ -722,6 +724,11 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             var acquiredSendLock = false;
             try
             {
+                if (Volatile.Read(ref _disposed) == 1)
+                {
+                    return;
+                }
+
                 acquiredSendLock = await _sendSemaphore.WaitAsync(CloseTimeout).ConfigureAwait(false);
                 if (!acquiredSendLock)
                 {

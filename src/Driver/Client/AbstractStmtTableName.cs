@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace TDengine.Driver.Client
 {
@@ -66,7 +66,9 @@ namespace TDengine.Driver.Client
             CheckRowValue(tags, _tagFields);
             if (_currentTableInfo.Tags == null)
             {
-                _currentTableInfo.Tags = tags;
+                var localTags = new object[tags.Length];
+                Array.Copy(tags, localTags, tags.Length);
+                _currentTableInfo.Tags = localTags;
             }
 
             IsTagsSet = true;

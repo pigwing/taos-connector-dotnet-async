@@ -1,4 +1,4 @@
-﻿using System.Threading.Tasks;
+using System.Threading.Tasks;
 using TDengine.Driver;
 using Xunit;
 
@@ -229,6 +229,20 @@ namespace Driver.Test.Client.Query
         {
             var db = "ws_stmt_exec_failure_state_test";
             await this.StmtExecFailureResetsExecutedStateAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncStmtMultipleAddBatchDirectTableTest()
+        {
+            var db = "ws_stmt_multi_batch_direct_test";
+            await this.StmtMultipleAddBatchDirectTableAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncStmtAddBatchResetsColumnStateTest()
+        {
+            var db = "ws_stmt_add_batch_state_test";
+            await this.StmtAddBatchResetsColumnStateAsyncTest(this._wsConnectString, db);
         }
 
         [Fact]

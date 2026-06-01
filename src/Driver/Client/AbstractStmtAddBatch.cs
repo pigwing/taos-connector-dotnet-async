@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace TDengine.Driver.Client
 {
@@ -43,12 +43,38 @@ namespace TDengine.Driver.Client
                 }
             }
 
-            // cache to dictionary
-            _tableInfos[_currentTableInfo.TableName] = _currentTableInfo;
+            AddCurrentTableInfoToBatch();
             // reset the current table info
 
             _addBatched = true;
             CleanBatch();
+        }
+
+        private void AddCurrentTableInfoToBatch()
+        {
+            if (_isInsert && !_needTableName &&
+                _tableInfos.TryGetValue(_currentTableInfo.TableName, out var existingTableInfo) &&
+                !ReferenceEquals(existingTableInfo, _currentTableInfo))
+            {
+                AppendRows(existingTableInfo, _currentTableInfo);
+                PutTableInfo(_currentTableInfo);
+                return;
+            }
+
+            _tableInfos[_currentTableInfo.TableName] = _currentTableInfo;
+        }
+
+        private static void AppendRows(Stmt2TableData target, Stmt2TableData source)
+        {
+            if (target.Cols.Length != source.Cols.Length)
+            {
+                throw new InvalidOperationException("Current batch column count does not match the previous batch.");
+            }
+
+            for (var i = 0; i < source.Cols.Length; i++)
+            {
+                target.Cols[i].AddRange(source.Cols[i]);
+            }
         }
     }
 }
