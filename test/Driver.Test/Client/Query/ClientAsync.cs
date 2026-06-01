@@ -1058,6 +1058,68 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
             }
         }
 
+        private async Task ClientRepeatedDisposeAfterQueryAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var setupClient = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await setupClient.ExecAsync($"drop database if exists {db}");
+                    await setupClient.ExecAsync($"create database {db}");
+                    await setupClient.ExecAsync($"use {db}");
+                    await setupClient.ExecAsync("create table test_repeated_dispose(ts timestamp, c1 int)");
+                    await setupClient.ExecAsync("insert into test_repeated_dispose values(now, 1)");
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+            }
+
+            try
+            {
+                for (var i = 0; i < 20; i++)
+                {
+                    var client = await DbDriver.OpenAsync(builder);
+                    var stopwatch = Stopwatch.StartNew();
+                    try
+                    {
+                        await client.ExecAsync($"use {db}");
+                        using (var rows = await client.QueryAsync("select c1 from test_repeated_dispose"))
+                        {
+                            Assert.True(await rows.ReadAsync());
+                            Assert.Equal(1, rows.GetInt32(0));
+                        }
+                    }
+                    finally
+                    {
+                        client.Dispose();
+                        stopwatch.Stop();
+                    }
+
+                    Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10),
+                        $"Repeated client dispose iteration {i} took {stopwatch.Elapsed}.");
+                }
+            }
+            catch (Exception e)
+            {
+                _output.WriteLine(e.ToString());
+                throw;
+            }
+            finally
+            {
+                using (var cleanupClient = await DbDriver.OpenAsync(builder))
+                {
+                    if (cleanupClient.ConnectionAvailable())
+                    {
+                        await cleanupClient.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
         private void AssertColumn(IRowsAsync result)
         {
             Assert.Equal(1, result.GetOrdinal("c1"));

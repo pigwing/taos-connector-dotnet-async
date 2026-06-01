@@ -219,5 +219,12 @@ namespace Driver.Test.Client.Query
             var db = "ws_client_dispose_open_rows_test";
             await this.ClientDisposeDoesNotHangWithOpenRowsAsyncTest(this._wsConnectString, db);
         }
+
+        [Fact]
+        public async Task WebSocketAsyncClientRepeatedDisposeAfterQueryTest()
+        {
+            var db = "ws_client_repeated_dispose_test";
+            await this.ClientRepeatedDisposeAfterQueryAsyncTest(this._wsConnectString, db);
+        }
     }
 }

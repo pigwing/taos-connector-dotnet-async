@@ -723,40 +723,6 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             DisposeClient();
         }
 
-        private async Task CloseClientAsync()
-        {
-            var acquiredSendLock = false;
-            try
-            {
-                using (var cts = new CancellationTokenSource(CloseTimeout))
-                {
-                    await _sendSemaphore.WaitAsync(cts.Token).ConfigureAwait(false);
-                    acquiredSendLock = true;
-                    if (_client.State == WebSocketState.Open || _client.State == WebSocketState.CloseReceived)
-                    {
-                        await _client.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "", cts.Token)
-                            .ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        _client.Abort();
-                    }
-                }
-            }
-            catch
-            {
-                _client.Abort();
-                _receiveCts.Cancel();
-            }
-            finally
-            {
-                if (acquiredSendLock)
-                {
-                    _sendSemaphore.Release();
-                }
-            }
-        }
-
         private async Task WaitReceiveLoopAsync()
         {
             var task = _receiveLoopTask;
@@ -792,9 +758,8 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
         public async Task CloseAsync()
         {
-            if (BeginClose(cancelReceive: false))
+            if (BeginClose(cancelReceive: true))
             {
-                await CloseClientAsync().ConfigureAwait(false);
                 await WaitReceiveLoopAsync().ConfigureAwait(false);
                 DisposeClient();
             }
