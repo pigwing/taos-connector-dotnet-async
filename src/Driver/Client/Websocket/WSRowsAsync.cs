@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,10 +21,13 @@ namespace TDengine.Driver.Client.Websocket
         private readonly List<TDengineMeta> _metas;
         private readonly Encoding _encoding;
         private readonly BlockReader _blockReader;
+        private readonly Func<ulong, CancellationToken, Task<byte[]>> _fetchRawBlockAsync;
+        private readonly object _fetchLock = new object();
         private int _freed;
         private int _currentRow;
         private int _blockSize;
         private byte[] _block;
+        private Task<byte[]> _fetchTask;
         private bool _completed;
 
         public bool HasRows => !_isUpdate;
@@ -33,6 +37,7 @@ namespace TDengine.Driver.Client.Websocket
         public WSRowsAsync(int affectedRows)
         {
             _isUpdate = true;
+            _completed = true;
             AffectRows = affectedRows;
         }
 
@@ -52,6 +57,23 @@ namespace TDengine.Driver.Client.Websocket
             _encoding = Encoding.UTF8;
             _blockReader = new BlockReader(55, FieldCount, result.Precision, result.FieldsTypes,
                 result.FieldsScales, tz);
+        }
+
+        internal WSRowsAsync(ulong resultId, IWSMetaResp result, TestFetchRawBlockAccessor accessor,
+            Func<ulong, CancellationToken, Task<byte[]>> fetchRawBlockAsync, TimeZoneInfo tz)
+            : this(resultId, result, (ConnectionAsync)null, tz)
+        {
+            if (accessor == null) throw new ArgumentNullException(nameof(accessor));
+            _fetchRawBlockAsync = fetchRawBlockAsync ?? throw new ArgumentNullException(nameof(fetchRawBlockAsync));
+        }
+
+        internal sealed class TestFetchRawBlockAccessor
+        {
+            public static readonly TestFetchRawBlockAccessor Instance = new TestFetchRawBlockAccessor();
+
+            private TestFetchRawBlockAccessor()
+            {
+            }
         }
 
         private List<TDengineMeta> ParseMetas(IWSMetaResp result)
@@ -106,6 +128,7 @@ namespace TDengine.Driver.Client.Websocket
             }
             finally
             {
+                ClearFetchTask(observeFault: true);
                 _block = null;
                 if (_blockReader != null)
                 {
@@ -160,6 +183,8 @@ namespace TDengine.Driver.Client.Websocket
         public async Task<bool> ReadAsync(CancellationToken cancellationToken)
         {
             ThrowIfFreed();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_isUpdate) return false;
             if (_completed) return false;
             if (_block == null)
             {
@@ -253,38 +278,180 @@ namespace TDengine.Driver.Client.Websocket
 
         private async Task FetchBlockAsync(CancellationToken cancellationToken)
         {
+            var fetchTask = GetOrStartFetchTask(cancellationToken);
+            byte[] fetchRawBlockResult;
             try
             {
-                var fetchRawBlockResult = await _connection.FetchRawBlockBinaryAsync(_resultId, cancellationToken)
+                fetchRawBlockResult = await WaitWithCancellationAsync(fetchTask, cancellationToken)
                     .ConfigureAwait(false);
-                var version = ReadUInt16(fetchRawBlockResult, 16);
-                if (version != 1)
-                    throw new Exception("Unsupported fetch raw block version " + version);
-                var code = ReadUInt32(fetchRawBlockResult, 34);
-                var messageLen = ReadUInt32(fetchRawBlockResult, 38);
-                var message = _encoding.GetString(fetchRawBlockResult, 42, (int)messageLen);
-                if (code != 0)
-                    throw new TDengineError((int)code, message);
-                _completed = BitConverter.ToBoolean(fetchRawBlockResult, 50 + (int)messageLen);
-                if (_completed)
-                {
-                    _block = null;
-                    _blockReader.ClearBlock();
-                    return;
-                }
-                var rawBlockLength = ReadUInt32(fetchRawBlockResult, 51 + (int)messageLen);
-                if (fetchRawBlockResult.Length != 55 + (int)messageLen + rawBlockLength)
-                    throw new Exception("Invalid fetch raw block result length");
-                _block = fetchRawBlockResult;
-                _blockReader.SetBlock(_block);
-                _blockSize = _blockReader.GetRows();
-                _currentRow = 0;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                ClearFetchTask(fetchTask, observeFault: false);
+                _block = null;
+                _blockReader.ClearBlock();
+                throw;
+            }
+
+            ClearFetchTask(fetchTask, observeFault: false);
+            ThrowIfFreed();
+            try
+            {
+                ApplyFetchBlock(fetchRawBlockResult);
             }
             catch
             {
                 _block = null;
                 _blockReader.ClearBlock();
                 throw;
+            }
+        }
+
+        private Task<byte[]> GetOrStartFetchTask(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_fetchLock)
+            {
+                if (_fetchTask == null)
+                {
+                    _fetchTask = FetchRawBlockAsync(CancellationToken.None);
+                }
+
+                return _fetchTask;
+            }
+        }
+
+        private Task<byte[]> FetchRawBlockAsync(CancellationToken cancellationToken)
+        {
+            if (_fetchRawBlockAsync != null)
+            {
+                return _fetchRawBlockAsync(_resultId, cancellationToken);
+            }
+
+            return _connection.FetchRawBlockBinaryAsync(_resultId, cancellationToken);
+        }
+
+        private void ClearFetchTask(Task<byte[]> task = null, bool observeFault = false)
+        {
+            Task<byte[]> oldTask = null;
+            lock (_fetchLock)
+            {
+                if (task == null || ReferenceEquals(_fetchTask, task))
+                {
+                    oldTask = _fetchTask;
+                    _fetchTask = null;
+                }
+            }
+
+            if (observeFault && oldTask != null)
+            {
+                ObserveFaultedTask(oldTask);
+            }
+        }
+
+        private static async Task<T> WaitWithCancellationAsync<T>(Task<T> task, CancellationToken cancellationToken)
+        {
+            if (!cancellationToken.CanBeCanceled || task.IsCompleted)
+            {
+                return await task.ConfigureAwait(false);
+            }
+
+            var cancellationTask = CreateCancellationTask(cancellationToken, out var registration);
+            using (registration)
+            {
+                if (await Task.WhenAny(task, cancellationTask).ConfigureAwait(false) != task)
+                {
+                    throw new OperationCanceledException(cancellationToken);
+                }
+            }
+
+            return await task.ConfigureAwait(false);
+        }
+
+        private static Task CreateCancellationTask(CancellationToken cancellationToken,
+            out CancellationTokenRegistration registration)
+        {
+            var tcs = CreateCancellationTaskCompletionSource();
+            registration = cancellationToken.Register(state =>
+            {
+                ((TaskCompletionSource<bool>)state).TrySetResult(true);
+            }, tcs);
+            return tcs.Task;
+        }
+
+        private static TaskCompletionSource<bool> CreateCancellationTaskCompletionSource()
+        {
+#if NET5_0_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            return new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+#else
+            return new TaskCompletionSource<bool>();
+#endif
+        }
+
+        private static void ObserveFaultedTask(Task task)
+        {
+            task.ContinueWith(t => GC.KeepAlive(t.Exception), CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private void ApplyFetchBlock(byte[] fetchRawBlockResult)
+        {
+            ValidateFetchBlockLength(fetchRawBlockResult, 42, "header");
+            var version = ReadUInt16(fetchRawBlockResult, 16);
+            if (version != 1)
+                throw new InvalidDataException("Unsupported fetch raw block version " + version);
+
+            var code = ReadUInt32(fetchRawBlockResult, 34);
+            var messageLen = ReadUInt32(fetchRawBlockResult, 38);
+            if (messageLen > int.MaxValue)
+                throw new InvalidDataException("Invalid fetch raw block message length");
+
+            var messageOffset = 42;
+            var messageEndOffset = (long)messageOffset + messageLen;
+            ValidateFetchBlockLength(fetchRawBlockResult, messageEndOffset, "message");
+            if (messageEndOffset > int.MaxValue)
+                throw new InvalidDataException("Invalid fetch raw block message length");
+            var message = _encoding.GetString(fetchRawBlockResult, messageOffset, (int)messageLen);
+            if (code != 0)
+                throw new TDengineError((int)code, message);
+
+            var completedOffset = messageEndOffset + 8;
+            ValidateFetchBlockLength(fetchRawBlockResult, completedOffset + 1, "completed flag");
+            if (completedOffset > int.MaxValue)
+                throw new InvalidDataException("Invalid fetch raw block completed flag offset");
+            _completed = BitConverter.ToBoolean(fetchRawBlockResult, (int)completedOffset);
+            if (_completed)
+            {
+                _block = null;
+                _blockReader.ClearBlock();
+                return;
+            }
+
+            var rawBlockLengthOffset = completedOffset + 1;
+            ValidateFetchBlockLength(fetchRawBlockResult, rawBlockLengthOffset + sizeof(uint), "raw block length");
+            if (rawBlockLengthOffset > int.MaxValue)
+                throw new InvalidDataException("Invalid fetch raw block length offset");
+            var rawBlockLength = ReadUInt32(fetchRawBlockResult, (int)rawBlockLengthOffset);
+            var expectedLength = (long)rawBlockLengthOffset + sizeof(uint) + rawBlockLength;
+            if (expectedLength > int.MaxValue || fetchRawBlockResult.Length != expectedLength)
+                throw new InvalidDataException("Invalid fetch raw block result length");
+
+            _block = fetchRawBlockResult;
+            _blockReader.SetBlock(_block);
+            _blockSize = _blockReader.GetRows();
+            _currentRow = 0;
+        }
+
+        private static void ValidateFetchBlockLength(byte[] bytes, long requiredLength, string segment)
+        {
+            if (bytes == null || requiredLength > int.MaxValue || bytes.Length < requiredLength)
+            {
+                throw new InvalidDataException($"Invalid fetch raw block {segment} length");
             }
         }
 

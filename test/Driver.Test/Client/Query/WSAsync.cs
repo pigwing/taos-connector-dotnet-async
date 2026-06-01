@@ -1,4 +1,4 @@
-﻿﻿using System.Threading.Tasks;
+﻿using System.Threading.Tasks;
 using TDengine.Driver;
 using Xunit;
 
@@ -184,6 +184,24 @@ namespace Driver.Test.Client.Query
         public async Task WebSocketAsyncRowsMetadataPrecisionScaleTest()
         {
             await this.RowsMetadataPrecisionScaleAsyncTest();
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncRowsCancelledReadPreservesInFlightFetchTest()
+        {
+            await this.RowsCancelledReadPreservesInFlightFetchAsyncTest();
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncRowsInvalidFetchBlockThrowsProtocolErrorTest()
+        {
+            await this.RowsInvalidFetchBlockThrowsProtocolErrorAsyncTest();
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncUpdateRowsReadReturnsFalseTest()
+        {
+            await this.UpdateRowsReadAsyncReturnsFalseTest();
         }
 
         [Fact]

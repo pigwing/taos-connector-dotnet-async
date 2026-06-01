@@ -1,5 +1,6 @@
-﻿﻿using System;
+﻿using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
@@ -883,6 +884,129 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
             }
 
             return Task.CompletedTask;
+        }
+
+        private async Task RowsCancelledReadPreservesInFlightFetchAsyncTest()
+        {
+            var result = CreateSingleIntRowsMeta();
+            var fetchTcs = CreateByteArrayTaskCompletionSource();
+            var fetchCount = 0;
+            using (var rows = new WSRowsAsync(1, result, WSRowsAsync.TestFetchRawBlockAccessor.Instance,
+                   (id, token) =>
+                   {
+                       Interlocked.Increment(ref fetchCount);
+                       return fetchTcs.Task;
+                   }, TimeZoneInfo.Utc))
+            using (var cts = new CancellationTokenSource())
+            {
+                var readTask = rows.ReadAsync(cts.Token);
+                cts.Cancel();
+
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => readTask);
+                Assert.Equal(1, fetchCount);
+
+                fetchTcs.SetResult(CreateSingleIntFetchBlock(42));
+                Assert.True(await rows.ReadAsync());
+                Assert.Equal(42, rows.GetInt32(0));
+                Assert.Equal(1, fetchCount);
+            }
+        }
+
+        private async Task RowsInvalidFetchBlockThrowsProtocolErrorAsyncTest()
+        {
+            var result = CreateSingleIntRowsMeta();
+            using (var rows = new WSRowsAsync(1, result, WSRowsAsync.TestFetchRawBlockAccessor.Instance,
+                       (id, token) => Task.FromResult(new byte[10]), TimeZoneInfo.Utc))
+            {
+                await Assert.ThrowsAsync<InvalidDataException>(() => rows.ReadAsync());
+            }
+        }
+
+        private async Task UpdateRowsReadAsyncReturnsFalseTest()
+        {
+            using (var rows = new WSRowsAsync(1))
+            {
+                Assert.False(rows.HasRows);
+                Assert.Equal(1, rows.AffectRows);
+                Assert.False(await rows.ReadAsync());
+            }
+        }
+
+        private static WSQueryResp CreateSingleIntRowsMeta()
+        {
+            return new WSQueryResp
+            {
+                FieldsCount = 1,
+                FieldsNames = new[] { "c1" },
+                FieldsTypes = new[] { (byte)TDengineDataType.TSDB_DATA_TYPE_INT },
+                FieldsLengths = new long[] { 4 },
+                FieldsPrecisions = new byte[] { 0 },
+                FieldsScales = new byte[] { 0 },
+                Precision = (int)TDenginePrecision.TSDB_TIME_PRECISION_MILLI
+            };
+        }
+
+        private static byte[] CreateSingleIntFetchBlock(int value)
+        {
+            const int rawBlockOffset = 55;
+            const int rawBlockLength = 42;
+            var bytes = new byte[rawBlockOffset + rawBlockLength];
+            WriteUInt16(bytes, 16, 1);
+            WriteUInt32(bytes, 34, 0);
+            WriteUInt32(bytes, 38, 0);
+            bytes[50] = 0;
+            WriteUInt32(bytes, 51, rawBlockLength);
+            WriteUInt32(bytes, rawBlockOffset + 0, 1);
+            WriteUInt32(bytes, rawBlockOffset + 4, rawBlockLength);
+            WriteUInt32(bytes, rawBlockOffset + 8, 1);
+            WriteUInt32(bytes, rawBlockOffset + 12, 1);
+            WriteUInt32(bytes, rawBlockOffset + 16, 0);
+            WriteUInt64(bytes, rawBlockOffset + 20, 0);
+            bytes[rawBlockOffset + 28] = (byte)TDengineDataType.TSDB_DATA_TYPE_INT;
+            WriteUInt32(bytes, rawBlockOffset + 29, 4);
+            WriteUInt32(bytes, rawBlockOffset + 33, 4);
+            WriteUInt32(bytes, rawBlockOffset + 38, (uint)value);
+            return bytes;
+        }
+
+        private static TaskCompletionSource<byte[]> CreateByteArrayTaskCompletionSource()
+        {
+#if NET5_0_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+            return new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+#else
+            return new TaskCompletionSource<byte[]>();
+#endif
+        }
+
+        private static void WriteUInt16(byte[] bytes, int offset, ushort value)
+        {
+            bytes[offset] = (byte)value;
+            bytes[offset + 1] = (byte)(value >> 8);
+        }
+
+        private static void WriteUInt32(byte[] bytes, int offset, uint value)
+        {
+            bytes[offset] = (byte)value;
+            bytes[offset + 1] = (byte)(value >> 8);
+            bytes[offset + 2] = (byte)(value >> 16);
+            bytes[offset + 3] = (byte)(value >> 24);
+        }
+
+        private static void WriteUInt32(byte[] bytes, int offset, int value)
+        {
+            WriteUInt32(bytes, offset, (uint)value);
+        }
+
+        private static void WriteUInt64(byte[] bytes, int offset, ulong value)
+        {
+            bytes[offset] = (byte)value;
+            bytes[offset + 1] = (byte)(value >> 8);
+            bytes[offset + 2] = (byte)(value >> 16);
+            bytes[offset + 3] = (byte)(value >> 24);
+            bytes[offset + 4] = (byte)(value >> 32);
+            bytes[offset + 5] = (byte)(value >> 40);
+            bytes[offset + 6] = (byte)(value >> 48);
+            bytes[offset + 7] = (byte)(value >> 56);
         }
 
         private async Task RowsDisposeIsIdempotentAndRejectsReadsAsyncTest(string connectString, string db)

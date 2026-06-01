@@ -734,14 +734,10 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 {
                     var closeTask = _client.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, string.Empty,
                         CancellationToken.None);
-                    if (await Task.WhenAny(closeTask, Task.Delay(CloseTimeout)).ConfigureAwait(false) == closeTask)
-                    {
-                        await closeTask.ConfigureAwait(false);
-                    }
-                    else
+                    if (!await WaitTaskAsync(closeTask, CloseTimeout).ConfigureAwait(false))
                     {
                         _client.Abort();
-                        _ = ObserveCloseTaskAsync(closeTask);
+                        ObserveFaultedTask(closeTask);
                     }
                 }
                 else if (state != WebSocketState.Closed && state != WebSocketState.CloseSent)
@@ -762,16 +758,33 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
         }
 
-        private static async Task ObserveCloseTaskAsync(Task closeTask)
+        private static async Task<bool> WaitTaskAsync(Task task, TimeSpan timeout)
         {
-            try
+            if (task.IsCompleted)
             {
-                await closeTask.ConfigureAwait(false);
+                await task.ConfigureAwait(false);
+                return true;
             }
-            catch
+
+            using (var timeoutCts = new CancellationTokenSource())
             {
-                // The connection was already aborted because close output exceeded the shutdown timeout.
+                var delayTask = Task.Delay(timeout, timeoutCts.Token);
+                if (await Task.WhenAny(task, delayTask).ConfigureAwait(false) != task)
+                {
+                    return false;
+                }
+
+                timeoutCts.Cancel();
+                await task.ConfigureAwait(false);
+                return true;
             }
+        }
+
+        private static void ObserveFaultedTask(Task task)
+        {
+            task.ContinueWith(t => GC.KeepAlive(t.Exception), CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         private async Task WaitReceiveLoopAsync()
@@ -782,16 +795,14 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 return;
             }
 
-            if (await Task.WhenAny(task, Task.Delay(CloseTimeout)).ConfigureAwait(false) != task)
+            if (!await WaitTaskAsync(task, CloseTimeout).ConfigureAwait(false))
             {
                 _client.Abort();
-                if (await Task.WhenAny(task, Task.Delay(CloseTimeout)).ConfigureAwait(false) != task)
+                if (!await WaitTaskAsync(task, CloseTimeout).ConfigureAwait(false))
                 {
                     return;
                 }
             }
-
-            await task.ConfigureAwait(false);
         }
 
         private void DisposeClient()
