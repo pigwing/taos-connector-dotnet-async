@@ -1,5 +1,6 @@
-﻿using System;
+﻿﻿using System;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -1110,6 +1111,86 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
             }
             finally
             {
+                using (var cleanupClient = await DbDriver.OpenAsync(builder))
+                {
+                    if (cleanupClient.ConnectionAvailable())
+                    {
+                        await cleanupClient.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private async Task ClientDisposeDoesNotCancelHttpConnectionReceiveAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var setupClient = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await setupClient.ExecAsync($"drop database if exists {db}");
+                    await setupClient.ExecAsync($"create database {db}");
+                    await setupClient.ExecAsync($"use {db}");
+                    await setupClient.ExecAsync("create table test_dispose_http_connection(ts timestamp, c1 int)");
+                    await setupClient.ExecAsync("insert into test_dispose_http_connection values(now, 1)");
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+            }
+
+            Exception? firstChanceHttpCancellation = null;
+            void OnFirstChanceException(object? sender, FirstChanceExceptionEventArgs args)
+            {
+                var exception = args.Exception;
+                if (!(exception is OperationCanceledException))
+                {
+                    return;
+                }
+
+                var stackTrace = exception.StackTrace;
+                if (stackTrace == null ||
+                    stackTrace.IndexOf("System.Net.Http.HttpConnection", StringComparison.Ordinal) < 0)
+                {
+                    return;
+                }
+
+                Interlocked.CompareExchange(ref firstChanceHttpCancellation, exception, null);
+            }
+
+            AppDomain.CurrentDomain.FirstChanceException += OnFirstChanceException;
+            try
+            {
+                for (var i = 0; i < 10; i++)
+                {
+                    var client = await DbDriver.OpenAsync(builder);
+                    try
+                    {
+                        await client.ExecAsync($"use {db}");
+                        using (var rows = await client.QueryAsync("select c1 from test_dispose_http_connection"))
+                        {
+                            Assert.True(await rows.ReadAsync());
+                            Assert.Equal(1, rows.GetInt32(0));
+                        }
+                    }
+                    finally
+                    {
+                        client.Dispose();
+                    }
+
+                    Assert.Null(firstChanceHttpCancellation);
+                }
+            }
+            catch (Exception e)
+            {
+                _output.WriteLine(e.ToString());
+                throw;
+            }
+            finally
+            {
+                AppDomain.CurrentDomain.FirstChanceException -= OnFirstChanceException;
                 using (var cleanupClient = await DbDriver.OpenAsync(builder))
                 {
                     if (cleanupClient.ConnectionAvailable())

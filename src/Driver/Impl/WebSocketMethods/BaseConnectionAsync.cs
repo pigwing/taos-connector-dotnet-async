@@ -22,7 +22,6 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             new ConcurrentDictionary<ulong, TaskCompletionSource<WsMessage>>();
         private readonly SemaphoreSlim _sendSemaphore = new SemaphoreSlim(1, 1);
         private readonly CancellationTokenSource _closeCts = new CancellationTokenSource();
-        private readonly CancellationTokenSource _receiveCts = new CancellationTokenSource();
         private readonly object _exitLock = new object();
         private Task _receiveLoopTask;
         private bool _exit;
@@ -574,7 +573,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
         private async Task<WebSocketReceiveResult> ReceiveFrameAsync(byte[] buffer)
         {
-            return await _client.ReceiveAsync(new ArraySegment<byte>(buffer), _receiveCts.Token)
+            return await _client.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None)
                 .ConfigureAwait(false);
         }
 
@@ -686,7 +685,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
         }
 
-        private bool BeginClose(Exception e = null, bool cancelReceive = true)
+        private bool BeginClose(Exception e = null)
         {
             lock (_exitLock)
             {
@@ -695,11 +694,6 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
 
             _closeCts.Cancel();
-            if (cancelReceive)
-            {
-                _receiveCts.Cancel();
-            }
-
             foreach (var kvp in _pendingRequests)
             {
                 if (e != null)
@@ -723,6 +717,63 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             DisposeClient();
         }
 
+        private async Task CloseClientOutputAsync()
+        {
+            var acquiredSendLock = false;
+            try
+            {
+                acquiredSendLock = await _sendSemaphore.WaitAsync(CloseTimeout).ConfigureAwait(false);
+                if (!acquiredSendLock)
+                {
+                    _client.Abort();
+                    return;
+                }
+
+                var state = _client.State;
+                if (state == WebSocketState.Open || state == WebSocketState.CloseReceived)
+                {
+                    var closeTask = _client.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, string.Empty,
+                        CancellationToken.None);
+                    if (await Task.WhenAny(closeTask, Task.Delay(CloseTimeout)).ConfigureAwait(false) == closeTask)
+                    {
+                        await closeTask.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _client.Abort();
+                        _ = ObserveCloseTaskAsync(closeTask);
+                    }
+                }
+                else if (state != WebSocketState.Closed && state != WebSocketState.CloseSent)
+                {
+                    _client.Abort();
+                }
+            }
+            catch
+            {
+                _client.Abort();
+            }
+            finally
+            {
+                if (acquiredSendLock)
+                {
+                    _sendSemaphore.Release();
+                }
+            }
+        }
+
+        private static async Task ObserveCloseTaskAsync(Task closeTask)
+        {
+            try
+            {
+                await closeTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // The connection was already aborted because close output exceeded the shutdown timeout.
+            }
+        }
+
         private async Task WaitReceiveLoopAsync()
         {
             var task = _receiveLoopTask;
@@ -734,7 +785,6 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             if (await Task.WhenAny(task, Task.Delay(CloseTimeout)).ConfigureAwait(false) != task)
             {
                 _client.Abort();
-                _receiveCts.Cancel();
                 if (await Task.WhenAny(task, Task.Delay(CloseTimeout)).ConfigureAwait(false) != task)
                 {
                     return;
@@ -753,13 +803,13 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
             _client.Dispose();
             _closeCts.Dispose();
-            _receiveCts.Dispose();
         }
 
         public async Task CloseAsync()
         {
-            if (BeginClose(cancelReceive: true))
+            if (BeginClose())
             {
+                await CloseClientOutputAsync().ConfigureAwait(false);
                 await WaitReceiveLoopAsync().ConfigureAwait(false);
                 DisposeClient();
             }

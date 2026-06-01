@@ -1,4 +1,4 @@
-﻿using System.Threading.Tasks;
+﻿﻿using System.Threading.Tasks;
 using TDengine.Driver;
 using Xunit;
 
@@ -225,6 +225,13 @@ namespace Driver.Test.Client.Query
         {
             var db = "ws_client_repeated_dispose_test";
             await this.ClientRepeatedDisposeAfterQueryAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncClientDisposeDoesNotCancelHttpConnectionReceiveTest()
+        {
+            var db = "ws_client_dispose_http_cancel_test";
+            await this.ClientDisposeDoesNotCancelHttpConnectionReceiveAsyncTest(this._wsConnectString, db);
         }
     }
 }
