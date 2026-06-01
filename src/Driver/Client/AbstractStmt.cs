@@ -128,19 +128,38 @@ namespace TDengine.Driver.Client
         // after execute, put all table info to cache
         private void CleanExec()
         {
+            CleanExec(true);
+        }
+
+        private void CleanExec(bool executed)
+        {
             if (!_isInsert)
             {
                 _queryFields = null;
             }
 
             _addBatched = false;
-            _executed = true;
+            _executed = executed;
             foreach (var tableInfo in _tableInfos.Values)
             {
                 // return table info to cache
                 PutTableInfo(tableInfo);
             }
             _tableInfos.Clear();
+        }
+
+        protected void ResetExecutionState()
+        {
+            CleanExec(false);
+        }
+
+        protected void ClearStatementCache()
+        {
+            CleanCache();
+        }
+
+        protected virtual void ThrowIfDisposed()
+        {
         }
 
         public abstract void Dispose();

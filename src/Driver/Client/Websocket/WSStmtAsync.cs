@@ -48,10 +48,12 @@ namespace TDengine.Driver.Client.Websocket
         {
             if (Interlocked.Exchange(ref _closed, 1) == 1) return;
 
-            if (_connection == null || !_connection.IsAvailable()) return;
             try
             {
-                await _connection.Stmt2CloseAsync(_stmt).ConfigureAwait(false);
+                if (_connection != null && _connection.IsAvailable())
+                {
+                    await _connection.Stmt2CloseAsync(_stmt).ConfigureAwait(false);
+                }
             }
             catch
             {
@@ -60,7 +62,21 @@ namespace TDengine.Driver.Client.Websocket
             finally
             {
                 _connection = null;
+                ClearStatementCache();
             }
+        }
+
+        protected override void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _closed) == 1)
+            {
+                throw new ObjectDisposedException(nameof(WSStmtAsync));
+            }
+        }
+
+        private void ThrowIfClosed()
+        {
+            ThrowIfDisposed();
         }
 
         public Task PrepareAsync(string query)
@@ -70,6 +86,7 @@ namespace TDengine.Driver.Client.Websocket
 
         public async Task PrepareAsync(string query, CancellationToken cancellationToken)
         {
+            ThrowIfClosed();
             bool isInsert;
             int count;
             TaosFieldAll[] fields;
@@ -117,6 +134,7 @@ namespace TDengine.Driver.Client.Websocket
 
         public Task SetTableNameAsync(string tableName)
         {
+            ThrowIfClosed();
             SetTableName(tableName);
             return Task.FromResult(0);
         }
@@ -129,6 +147,7 @@ namespace TDengine.Driver.Client.Websocket
 
         public Task SetTagsAsync(object[] tags)
         {
+            ThrowIfClosed();
             SetTags(tags);
             return Task.FromResult(0);
         }
@@ -141,16 +160,19 @@ namespace TDengine.Driver.Client.Websocket
 
         public Task<TaosFieldE[]> GetTagFieldsAsync()
         {
+            ThrowIfClosed();
             return Task.FromResult(GetTagFields());
         }
 
         public Task<TaosFieldE[]> GetColFieldsAsync()
         {
+            ThrowIfClosed();
             return Task.FromResult(GetColFields());
         }
 
         public Task BindRowAsync(object[] row)
         {
+            ThrowIfClosed();
             BindRow(row);
             return Task.FromResult(0);
         }
@@ -163,6 +185,7 @@ namespace TDengine.Driver.Client.Websocket
 
         public Task BindColumnAsync(TaosFieldE[] fields, params Array[] arrays)
         {
+            ThrowIfClosed();
             BindColumn(fields, arrays);
             return Task.FromResult(0);
         }
@@ -175,6 +198,7 @@ namespace TDengine.Driver.Client.Websocket
 
         public Task AddBatchAsync()
         {
+            ThrowIfClosed();
             AddBatch();
             return Task.FromResult(0);
         }
@@ -192,24 +216,33 @@ namespace TDengine.Driver.Client.Websocket
 
         public async Task ExecAsync(CancellationToken cancellationToken)
         {
+            ThrowIfClosed();
             var buffer = GenerateBindBinaryForExecution();
             int affectedRows;
             try
             {
-                affectedRows = await BindBinaryInternalAsync(buffer, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception e)
-            {
-                if (!_client.AutoReconnect || IsConnectionAvailable(e)) throw;
-                await ReconnectInternalAsync(cancellationToken).ConfigureAwait(false);
-                var resp = await _connection.Stmt2PrepareAsync(_stmt, PreparedSql, cancellationToken)
-                    .ConfigureAwait(false);
-                ConvertPrepareResponse(resp, out var insert, out var count, out var fields);
-                ValidateRePrepareResult(insert, count, fields);
-                affectedRows = await BindBinaryInternalAsync(buffer, cancellationToken).ConfigureAwait(false);
-            }
+                try
+                {
+                    affectedRows = await BindBinaryInternalAsync(buffer, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    if (!_client.AutoReconnect || IsConnectionAvailable(e)) throw;
+                    await ReconnectInternalAsync(cancellationToken).ConfigureAwait(false);
+                    var resp = await _connection.Stmt2PrepareAsync(_stmt, PreparedSql, cancellationToken)
+                        .ConfigureAwait(false);
+                    ConvertPrepareResponse(resp, out var insert, out var count, out var fields);
+                    ValidateRePrepareResult(insert, count, fields);
+                    affectedRows = await BindBinaryInternalAsync(buffer, cancellationToken).ConfigureAwait(false);
+                }
 
-            CompleteExecution(affectedRows);
+                CompleteExecution(affectedRows);
+            }
+            catch
+            {
+                ResetExecutionState();
+                throw;
+            }
         }
 
         public Task<IRowsAsync> ResultAsync()
@@ -219,6 +252,7 @@ namespace TDengine.Driver.Client.Websocket
 
         public async Task<IRowsAsync> ResultAsync(CancellationToken cancellationToken)
         {
+            ThrowIfClosed();
             CheckExecuted();
             if (IsInsert())
             {
@@ -231,17 +265,20 @@ namespace TDengine.Driver.Client.Websocket
 
         protected override void PrepareInternal(string query, out bool isInsert, out int count, out TaosFieldAll[] fields)
         {
+            ThrowIfClosed();
             var resp = _connection.Stmt2PrepareAsync(_stmt, query).GetAwaiter().GetResult();
             ConvertPrepareResponse(resp, out isInsert, out count, out fields);
         }
 
         protected override void BindBinaryInternal(byte[] data, out int affectedRows)
         {
+            ThrowIfClosed();
             affectedRows = BindBinaryInternalAsync(data, CancellationToken.None).GetAwaiter().GetResult();
         }
 
         private async Task<int> BindBinaryInternalAsync(byte[] data, CancellationToken cancellationToken)
         {
+            ThrowIfClosed();
             await _connection.Stmt2BindAsync(_stmt, data, cancellationToken).ConfigureAwait(false);
             var resp = await _connection.Stmt2ExecAsync(_stmt, cancellationToken).ConfigureAwait(false);
             return resp.Affected;

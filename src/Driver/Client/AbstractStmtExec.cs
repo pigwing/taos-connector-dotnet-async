@@ -12,6 +12,7 @@ namespace TDengine.Driver.Client
     {
         public void Exec()
         {
+            ThrowIfDisposed();
             if (!_addBatched)
             {
                 throw new InvalidOperationException("No batch added. Call AddBatch() before Exec().");

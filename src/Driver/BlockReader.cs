@@ -179,6 +179,19 @@ namespace TDengine.Driver
             }
         }
 
+        public void ClearBlock()
+        {
+            _block = null;
+            _rows = 0;
+            _lengthOffset = 0;
+            _headerOffset = 0;
+            _nullBitMapOffset = 0;
+            if (_colHeadOffset != null)
+            {
+                Array.Clear(_colHeadOffset, 0, _colHeadOffset.Length);
+            }
+        }
+
         // Set block for for TMQ blocks
         public void SetTMQBlock(byte[] block, int precision, int offset)
         {

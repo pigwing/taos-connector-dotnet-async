@@ -90,6 +90,7 @@ namespace TDengine.Driver.Client
 
         private void CheckPrepared()
         {
+            ThrowIfDisposed();
             if (string.IsNullOrEmpty(_sql))
             {
                 throw new InvalidOperationException("This statement has not been prepared.");

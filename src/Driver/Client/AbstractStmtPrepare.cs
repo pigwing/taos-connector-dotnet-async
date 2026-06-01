@@ -6,6 +6,7 @@ namespace TDengine.Driver.Client
     {
         public void Prepare(string query)
         {
+            ThrowIfDisposed();
             CleanCache();
             try
             {

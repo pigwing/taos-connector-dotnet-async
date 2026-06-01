@@ -1,9 +1,12 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver;
 using TDengine.Driver.Client;
+using TDengine.Driver.Client.Websocket;
+using TDengine.Driver.Impl.WebSocketMethods.Protocol;
 using Test.Fixture;
 using Xunit;
 using Xunit.Abstractions;
@@ -650,6 +653,89 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
             }
         }
 
+        private async Task CancelledOperationsDoNotBreakConnectionAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await client.ExecAsync($"drop database if exists {db}");
+                    await client.ExecAsync($"create database {db}");
+                    await client.ExecAsync($"use {db}");
+                    await client.ExecAsync("create table test_cancelled_ops(ts timestamp, c1 int)");
+
+                    using (var cts = new CancellationTokenSource())
+                    {
+                        cts.Cancel();
+                        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                            () => client.ExecAsync("insert into test_cancelled_ops values(now, 1)", cts.Token));
+                        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                            () => client.QueryAsync("select c1 from test_cancelled_ops", cts.Token));
+                        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                            () => client.StmtInitAsync(cts.Token));
+                    }
+
+                    Assert.True(client.ConnectionAvailable());
+                    await client.ExecAsync("insert into test_cancelled_ops values(now, 2)");
+                    using (var rows = await client.QueryAsync("select c1 from test_cancelled_ops"))
+                    {
+                        Assert.True(await rows.ReadAsync());
+                        Assert.Equal(2, rows.GetInt32(0));
+                        Assert.False(await rows.ReadAsync());
+                    }
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+                finally
+                {
+                    if (client.ConnectionAvailable())
+                    {
+                        await client.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private async Task UnicodeSqlPayloadAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await client.ExecAsync($"drop database if exists {db}");
+                    await client.ExecAsync($"create database {db}");
+                    await client.ExecAsync($"use {db}");
+                    await client.ExecAsync("create table test_unicode_sql(ts timestamp, c1 nchar(64), c2 binary(64))");
+                    await client.ExecAsync("insert into test_unicode_sql values(now, '涛思数据', 'TDengine涛思数据')");
+
+                    using (var rows = await client.QueryAsync("select c1, c2 from test_unicode_sql where c1 = '涛思数据'"))
+                    {
+                        Assert.True(await rows.ReadAsync());
+                        Assert.Equal("涛思数据", rows.GetString(0));
+                        Assert.Equal(Encoding.UTF8.GetBytes("TDengine涛思数据"), rows.GetValue(1));
+                        Assert.False(await rows.ReadAsync());
+                    }
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+                finally
+                {
+                    if (client.ConnectionAvailable())
+                    {
+                        await client.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
         private async Task ConcurrentQueryAndFetchAsyncTest(string connectString, string db)
         {
             var builder = new ConnectionStringBuilder(connectString);
@@ -765,6 +851,208 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
                     if (client.ConnectionAvailable())
                     {
                         await client.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private Task RowsMetadataPrecisionScaleAsyncTest()
+        {
+            var result = new WSQueryResp
+            {
+                FieldsCount = 2,
+                FieldsNames = new[] { "c_decimal", "c_plain" },
+                FieldsTypes = new[]
+                {
+                    (byte)TDengineDataType.TSDB_DATA_TYPE_DECIMAL64,
+                    (byte)TDengineDataType.TSDB_DATA_TYPE_INT
+                },
+                FieldsLengths = new long[] { 8, 4 },
+                FieldsPrecisions = new byte[] { 18 },
+                FieldsScales = new byte[] { 6 },
+                Precision = (int)TDenginePrecision.TSDB_TIME_PRECISION_MILLI
+            };
+
+            using (var rows = new WSRowsAsync(1, result, null, TimeZoneInfo.Utc))
+            {
+                Assert.Equal(18, rows.GetFieldPrecision(0));
+                Assert.Equal(6, rows.GetFieldScale(0));
+                Assert.Equal(0, rows.GetFieldPrecision(1));
+                Assert.Equal(0, rows.GetFieldScale(1));
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private async Task RowsDisposeIsIdempotentAndRejectsReadsAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await client.ExecAsync($"drop database if exists {db}");
+                    await client.ExecAsync($"create database {db}");
+                    await client.ExecAsync($"use {db}");
+                    await client.ExecAsync("create table test_rows_dispose(ts timestamp, c1 int)");
+                    await client.ExecAsync("insert into test_rows_dispose values(now, 1)");
+
+                    var rows = await client.QueryAsync("select c1 from test_rows_dispose");
+                    Assert.True(await rows.ReadAsync());
+                    rows.Dispose();
+                    rows.Dispose();
+
+                    await Assert.ThrowsAsync<ObjectDisposedException>(() => rows.ReadAsync());
+                    Assert.Throws<ObjectDisposedException>(() => rows.GetInt32(0));
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+                finally
+                {
+                    if (client.ConnectionAvailable())
+                    {
+                        await client.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private async Task ReadCancellationDoesNotCompleteRowsAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                try
+                {
+                    await client.ExecAsync($"drop database if exists {db}");
+                    await client.ExecAsync($"create database {db}");
+                    await client.ExecAsync($"use {db}");
+                    await client.ExecAsync("create table test_read_cancel(ts timestamp, c1 int)");
+                    await client.ExecAsync("insert into test_read_cancel values(now, 42)");
+
+                    using (var rows = await client.QueryAsync("select c1 from test_read_cancel"))
+                    using (var cts = new CancellationTokenSource())
+                    {
+                        cts.Cancel();
+                        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => rows.ReadAsync(cts.Token));
+
+                        Assert.True(await rows.ReadAsync());
+                        Assert.Equal(42, rows.GetInt32(0));
+                        Assert.False(await rows.ReadAsync());
+                    }
+                }
+                catch (Exception e)
+                {
+                    _output.WriteLine(e.ToString());
+                    throw;
+                }
+                finally
+                {
+                    if (client.ConnectionAvailable())
+                    {
+                        await client.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private async Task StmtDisposeIsIdempotentAndRejectsUseAsyncTest(string connectString)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            using (var client = await DbDriver.OpenAsync(builder))
+            {
+                var stmt = await client.StmtInitAsync();
+                stmt.Dispose();
+                stmt.Dispose();
+
+                await Assert.ThrowsAsync<ObjectDisposedException>(() => stmt.PrepareAsync("select 1"));
+                Assert.Throws<ObjectDisposedException>(() => stmt.IsInsert());
+            }
+        }
+
+        private async Task StmtExecFailureResetsExecutedStateAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            var client = await DbDriver.OpenAsync(builder);
+            try
+            {
+                await client.ExecAsync($"drop database if exists {db}");
+                await client.ExecAsync($"create database {db}");
+                await client.ExecAsync($"use {db}");
+                await client.ExecAsync("create table test_stmt_failure(ts timestamp, c1 int)");
+
+                var stmt = await client.StmtInitAsync();
+                try
+                {
+                    await stmt.PrepareAsync("insert into test_stmt_failure values(?,?)");
+                    await stmt.BindRowAsync(new object[] { DateTime.UtcNow, 7 });
+                    await stmt.AddBatchAsync();
+
+                    client.Dispose();
+
+                    await Assert.ThrowsAnyAsync<Exception>(() => stmt.ExecAsync());
+                    await Assert.ThrowsAsync<InvalidOperationException>(() => stmt.ResultAsync());
+                }
+                finally
+                {
+                    stmt.Dispose();
+                }
+            }
+            catch (Exception e)
+            {
+                _output.WriteLine(e.ToString());
+                throw;
+            }
+            finally
+            {
+                client.Dispose();
+                using (var cleanupClient = await DbDriver.OpenAsync(builder))
+                {
+                    if (cleanupClient.ConnectionAvailable())
+                    {
+                        await cleanupClient.ExecAsync($"drop database if exists {db}");
+                    }
+                }
+            }
+        }
+
+        private async Task ClientDisposeDoesNotHangWithOpenRowsAsyncTest(string connectString, string db)
+        {
+            var builder = new ConnectionStringBuilder(connectString);
+            var client = await DbDriver.OpenAsync(builder);
+            try
+            {
+                await client.ExecAsync($"drop database if exists {db}");
+                await client.ExecAsync($"create database {db}");
+                await client.ExecAsync($"use {db}");
+                await client.ExecAsync("create table test_client_dispose(ts timestamp, c1 int)");
+                await client.ExecAsync("insert into test_client_dispose values(now, 1)");
+
+                var rows = await client.QueryAsync("select c1 from test_client_dispose");
+                var stopwatch = Stopwatch.StartNew();
+                client.Dispose();
+                stopwatch.Stop();
+
+                Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10),
+                    $"Client dispose took {stopwatch.Elapsed}.");
+                await Assert.ThrowsAnyAsync<Exception>(() => rows.ReadAsync());
+            }
+            catch (Exception e)
+            {
+                _output.WriteLine(e.ToString());
+                throw;
+            }
+            finally
+            {
+                client.Dispose();
+                using (var cleanupClient = await DbDriver.OpenAsync(builder))
+                {
+                    if (cleanupClient.ConnectionAvailable())
+                    {
+                        await cleanupClient.ExecAsync($"drop database if exists {db}");
                     }
                 }
             }

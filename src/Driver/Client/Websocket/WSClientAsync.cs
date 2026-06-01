@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.WebSockets;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver.Impl.WebSocketMethods;
@@ -136,6 +137,17 @@ namespace TDengine.Driver.Client.Websocket
             {
                 throw new ObjectDisposedException(nameof(WSClientAsync));
             }
+        }
+
+        private async Task ReconnectOrThrowAsync(Exception connectionException, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            if (!AutoReconnect)
+            {
+                ExceptionDispatchInfo.Capture(connectionException).Throw();
+            }
+
+            await ReconnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
         public async Task ConnectAsync()
@@ -366,8 +378,7 @@ namespace TDengine.Driver.Client.Websocket
                     throw;
                 }
 
-                ThrowIfDisposed();
-                await ReconnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                await ReconnectOrThrowAsync(e, cancellationToken).ConfigureAwait(false);
                 return await DoStmtInitAsync(reqId, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -409,8 +420,7 @@ namespace TDengine.Driver.Client.Websocket
                     throw;
                 }
 
-                ThrowIfDisposed();
-                await ReconnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                await ReconnectOrThrowAsync(e, cancellationToken).ConfigureAwait(false);
                 return await DoQueryAsync(query, reqId, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -458,8 +468,7 @@ namespace TDengine.Driver.Client.Websocket
                     throw;
                 }
 
-                ThrowIfDisposed();
-                await ReconnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                await ReconnectOrThrowAsync(e, cancellationToken).ConfigureAwait(false);
                 return await DoExecAsync(query, reqId, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -472,7 +481,7 @@ namespace TDengine.Driver.Client.Websocket
                 .ConfigureAwait(false);
             if (!resp.IsUpdate)
             {
-                await connection.FreeResultAsync(resp.ResultId).ConfigureAwait(false);
+                await connection.FreeResultAsync(resp.ResultId, cancellationToken).ConfigureAwait(false);
             }
 
             return resp.AffectedRows;
@@ -500,8 +509,7 @@ namespace TDengine.Driver.Client.Websocket
                     throw;
                 }
 
-                ThrowIfDisposed();
-                await ReconnectAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                await ReconnectOrThrowAsync(e, cancellationToken).ConfigureAwait(false);
                 await DoSchemalessInsertAsync(lines, protocol, precision, ttl, reqId, cancellationToken)
                     .ConfigureAwait(false);
             }

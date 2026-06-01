@@ -153,6 +153,20 @@ namespace Driver.Test.Client.Query
         }
 
         [Fact]
+        public async Task WebSocketAsyncCancelledOperationsDoNotBreakConnectionTest()
+        {
+            var db = "ws_cancelled_ops_recovery_test";
+            await this.CancelledOperationsDoNotBreakConnectionAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncUnicodeSqlPayloadTest()
+        {
+            var db = "ws_unicode_sql_payload_test";
+            await this.UnicodeSqlPayloadAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
         public async Task WebSocketAsyncConcurrentQueryAndFetchTest()
         {
             var db = "ws_concurrent_query_fetch_test";
@@ -164,6 +178,46 @@ namespace Driver.Test.Client.Query
         {
             var db = "ws_concurrent_insert_query_stress_test";
             await this.ConcurrentInsertAndQueryStressAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncRowsMetadataPrecisionScaleTest()
+        {
+            await this.RowsMetadataPrecisionScaleAsyncTest();
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncRowsDisposeIsIdempotentAndRejectsReadsTest()
+        {
+            var db = "ws_rows_dispose_behavior_test";
+            await this.RowsDisposeIsIdempotentAndRejectsReadsAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncReadCancellationDoesNotCompleteRowsTest()
+        {
+            var db = "ws_read_cancel_recovery_test";
+            await this.ReadCancellationDoesNotCompleteRowsAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncStmtDisposeIsIdempotentAndRejectsUseTest()
+        {
+            await this.StmtDisposeIsIdempotentAndRejectsUseAsyncTest(this._wsConnectString);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncStmtExecFailureResetsExecutedStateTest()
+        {
+            var db = "ws_stmt_exec_failure_state_test";
+            await this.StmtExecFailureResetsExecutedStateAsyncTest(this._wsConnectString, db);
+        }
+
+        [Fact]
+        public async Task WebSocketAsyncClientDisposeDoesNotHangWithOpenRowsTest()
+        {
+            var db = "ws_client_dispose_open_rows_test";
+            await this.ClientDisposeDoesNotHangWithOpenRowsAsyncTest(this._wsConnectString, db);
         }
     }
 }

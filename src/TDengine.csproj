@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFrameworks>net5;net6;net7;net8;net9;net10.0;netstandard2.0;netstandard2.1;net45;net451;</TargetFrameworks>
-    <PackageId>TDengine.Connector</PackageId>
+    <PackageId>TDengine.Connector.Async</PackageId>
     <PackageIcon>image\logo.jpg</PackageIcon>
     <PackageReadmeFile>docs\README.md</PackageReadmeFile>
     <Version>3.2.1</Version>
@@ -22,6 +22,7 @@
     <NoWarn>CS1591;NETSDK1138</NoWarn>
 <!--    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>-->
     <IsPackable>true</IsPackable>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <!--<Nullable>enable</Nullable>-->
   </PropertyGroup>
   <ItemGroup>

@@ -56,15 +56,20 @@ namespace TDengine.Driver.Client.Websocket
 
         private List<TDengineMeta> ParseMetas(IWSMetaResp result)
         {
-            var metaList = new List<TDengineMeta>();
+            var metaList = new List<TDengineMeta>(FieldCount);
             for (var i = 0; i < FieldCount; i++)
             {
                 metaList.Add(new TDengineMeta
                 {
                     name = result.FieldsNames[i],
                     type = result.FieldsTypes[i],
-                    scale = result.FieldsScales[i],
-                    size = (int)result.FieldsLengths[i]
+                    size = (int)result.FieldsLengths[i],
+                    precision = (result.FieldsPrecisions != null && i < result.FieldsPrecisions.Length)
+                        ? result.FieldsPrecisions[i]
+                        : (byte)0,
+                    scale = (result.FieldsScales != null && i < result.FieldsScales.Length)
+                        ? result.FieldsScales[i]
+                        : (byte)0
                 });
             }
 
@@ -102,21 +107,28 @@ namespace TDengine.Driver.Client.Websocket
             finally
             {
                 _block = null;
+                if (_blockReader != null)
+                {
+                    _blockReader.ClearBlock();
+                }
             }
         }
 
         public long GetBytes(int ordinal, long dataOffset, byte[] buffer, int bufferOffset, int length)
         {
+            ThrowIfFreed();
             return _blockReader.GetBytes(_currentRow, ordinal, dataOffset, buffer, bufferOffset, length);
         }
 
         public char GetChar(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetChar(_currentRow, ordinal);
         }
 
         public long GetChars(int ordinal, long dataOffset, char[] buffer, int bufferOffset, int length)
         {
+            ThrowIfFreed();
             return _blockReader.GetChars(_currentRow, ordinal, dataOffset, buffer, bufferOffset, length);
         }
 
@@ -124,6 +136,7 @@ namespace TDengine.Driver.Client.Websocket
 
         public object GetValue(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.Read(_currentRow, ordinal);
         }
 
@@ -146,6 +159,7 @@ namespace TDengine.Driver.Client.Websocket
 
         public async Task<bool> ReadAsync(CancellationToken cancellationToken)
         {
+            ThrowIfFreed();
             if (_completed) return false;
             if (_block == null)
             {
@@ -161,94 +175,125 @@ namespace TDengine.Driver.Client.Websocket
 
         public bool IsDBNull(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.IsDBNull(_currentRow, ordinal);
         }
 
         public byte GetByte(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetByte(_currentRow, ordinal);
         }
 
         public short GetInt16(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetInt16(_currentRow, ordinal);
         }
 
         public int GetInt32(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetInt32(_currentRow, ordinal);
         }
 
         public long GetInt64(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetInt64(_currentRow, ordinal);
         }
 
         public bool GetBoolean(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetBoolean(_currentRow, ordinal);
         }
 
         public DateTime GetDateTime(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetDateTime(_currentRow, ordinal);
         }
 
         public decimal GetDecimal(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetDecimal(_currentRow, ordinal);
         }
 
         public double GetDouble(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetDouble(_currentRow, ordinal);
         }
 
         public float GetFloat(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetFloat(_currentRow, ordinal);
         }
 
         public string GetString(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetString(_currentRow, ordinal);
         }
 
         public int GetValues(object[] values)
         {
+            ThrowIfFreed();
             return _blockReader.GetValues(_currentRow, values);
         }
 
         public DateTimeOffset GetDateTimeOffset(int ordinal)
         {
+            ThrowIfFreed();
             return _blockReader.GetDateTimeOffset(_currentRow, ordinal);
         }
 
         private async Task FetchBlockAsync(CancellationToken cancellationToken)
         {
-            var fetchRawBlockResult = await _connection.FetchRawBlockBinaryAsync(_resultId, cancellationToken)
-                .ConfigureAwait(false);
-            var version = ReadUInt16(fetchRawBlockResult, 16);
-            if (version != 1)
-                throw new Exception("Unsupported fetch raw block version " + version);
-            var code = ReadUInt32(fetchRawBlockResult, 34);
-            var messageLen = ReadUInt32(fetchRawBlockResult, 38);
-            var message = _encoding.GetString(fetchRawBlockResult, 42, (int)messageLen);
-            if (code != 0)
-                throw new TDengineError((int)code, message);
-            _completed = BitConverter.ToBoolean(fetchRawBlockResult, 50 + (int)messageLen);
-            if (_completed)
+            try
+            {
+                var fetchRawBlockResult = await _connection.FetchRawBlockBinaryAsync(_resultId, cancellationToken)
+                    .ConfigureAwait(false);
+                var version = ReadUInt16(fetchRawBlockResult, 16);
+                if (version != 1)
+                    throw new Exception("Unsupported fetch raw block version " + version);
+                var code = ReadUInt32(fetchRawBlockResult, 34);
+                var messageLen = ReadUInt32(fetchRawBlockResult, 38);
+                var message = _encoding.GetString(fetchRawBlockResult, 42, (int)messageLen);
+                if (code != 0)
+                    throw new TDengineError((int)code, message);
+                _completed = BitConverter.ToBoolean(fetchRawBlockResult, 50 + (int)messageLen);
+                if (_completed)
+                {
+                    _block = null;
+                    _blockReader.ClearBlock();
+                    return;
+                }
+                var rawBlockLength = ReadUInt32(fetchRawBlockResult, 51 + (int)messageLen);
+                if (fetchRawBlockResult.Length != 55 + (int)messageLen + rawBlockLength)
+                    throw new Exception("Invalid fetch raw block result length");
+                _block = fetchRawBlockResult;
+                _blockReader.SetBlock(_block);
+                _blockSize = _blockReader.GetRows();
+                _currentRow = 0;
+            }
+            catch
             {
                 _block = null;
-                return;
+                _blockReader.ClearBlock();
+                throw;
             }
-            var rawBlockLength = ReadUInt32(fetchRawBlockResult, 51 + (int)messageLen);
-            if (fetchRawBlockResult.Length != 55 + (int)messageLen + rawBlockLength)
-                throw new Exception("Invalid fetch raw block result length");
-            _block = fetchRawBlockResult;
-            _blockReader.SetBlock(_block);
-            _blockSize = _blockReader.GetRows();
-            _currentRow = 0;
+        }
+
+        private void ThrowIfFreed()
+        {
+            if (Volatile.Read(ref _freed) == 1)
+            {
+                throw new ObjectDisposedException(nameof(WSRowsAsync));
+            }
         }
 
         private static ushort ReadUInt16(byte[] source, int offset)

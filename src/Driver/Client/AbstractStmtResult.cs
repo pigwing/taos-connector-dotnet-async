@@ -6,11 +6,13 @@ namespace TDengine.Driver.Client
     {
         public long Affected()
         {
+            ThrowIfDisposed();
             return _affectedRows;
         }
 
         public IRows Result()
         {
+            ThrowIfDisposed();
             CheckExecuted();
 
             if (_isInsert)
@@ -26,6 +28,7 @@ namespace TDengine.Driver.Client
 
         protected void CheckExecuted()
         {
+            ThrowIfDisposed();
             if (!_executed)
             {
                 throw new InvalidOperationException("Statement has not been executed yet.");
