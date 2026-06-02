@@ -159,9 +159,15 @@ namespace TDengine.Driver.Client.Websocket
         public async Task ConnectAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
-            if (!await TryOpenAsync(_failoverAddresses, 1, 0, false, null, cancellationToken)
+            var context = new TryOpenContext();
+            if (!await TryOpenAsync(_failoverAddresses, 1, 0, false, null, cancellationToken, context)
                     .ConfigureAwait(false))
             {
+                if (context.LastException != null)
+                {
+                    ExceptionDispatchInfo.Capture(context.LastException).Throw();
+                }
+
                 throw new TDengineError((int)TDengineError.InternalErrorCode.WS_CONNECT_FAILED,
                     "websocket connection failed");
             }
@@ -169,15 +175,15 @@ namespace TDengine.Driver.Client.Websocket
 
         private async Task<bool> TryOpenAsync(IReadOnlyList<FailoverAddress> addresses, int retryCount,
             int retryIntervalMs, bool delayBeforeFirstAttempt, FailoverAddress preferredAddress,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, TryOpenContext context = null)
         {
             return await TryOpenAsync(addresses, retryCount, retryIntervalMs, delayBeforeFirstAttempt,
-                preferredAddress, cancellationToken, null, false).ConfigureAwait(false);
+                preferredAddress, cancellationToken, null, false, context).ConfigureAwait(false);
         }
 
         private async Task<bool> TryOpenAsync(IReadOnlyList<FailoverAddress> addresses, int retryCount,
             int retryIntervalMs, bool delayBeforeFirstAttempt, FailoverAddress preferredAddress,
-            CancellationToken cancellationToken, ConnectionAsync old, bool force)
+            CancellationToken cancellationToken, ConnectionAsync old, bool force, TryOpenContext context = null)
         {
             Exception lastException = null;
             var excluded = new HashSet<string>();
@@ -237,6 +243,11 @@ namespace TDengine.Driver.Client.Websocket
                     catch (Exception e)
                     {
                         lastException = e;
+                        if (context != null)
+                        {
+                            context.LastException = e;
+                        }
+
                         excluded.Add(address.CacheKey);
                         if (connection != null)
                         {
@@ -252,6 +263,11 @@ namespace TDengine.Driver.Client.Websocket
 
             if (lastException != null)
             {
+                if (context != null)
+                {
+                    context.LastException = lastException;
+                }
+
                 Debug.WriteLine(lastException);
             }
 
@@ -553,6 +569,11 @@ namespace TDengine.Driver.Client.Websocket
 
             throw new TDengineError((int)TDengineError.InternalErrorCode.WS_RECONNECT_FAILED,
                 "websocket connection reconnect failed");
+        }
+
+        private sealed class TryOpenContext
+        {
+            internal Exception LastException { get; set; }
         }
     }
 }

@@ -895,6 +895,7 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
                    (id, token) =>
                    {
                        Interlocked.Increment(ref fetchCount);
+                       Assert.False(token.IsCancellationRequested);
                        return fetchTcs.Task;
                    }, TimeZoneInfo.Utc))
             using (var cts = new CancellationTokenSource())
@@ -909,6 +910,34 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
                 Assert.True(await rows.ReadAsync());
                 Assert.Equal(42, rows.GetInt32(0));
                 Assert.Equal(1, fetchCount);
+            }
+        }
+
+        private async Task RowsDisposeCancelsInFlightFetchAsyncTest()
+        {
+            var result = CreateSingleIntRowsMeta();
+            var fetchStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var fetchCancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var rows = new WSRowsAsync(1, result, WSRowsAsync.TestFetchRawBlockAccessor.Instance,
+                       (id, token) =>
+                       {
+                           fetchStarted.SetResult(true);
+                           token.Register(state =>
+                           {
+                               ((TaskCompletionSource<bool>)state!).TrySetResult(true);
+                           }, fetchCancelled);
+                           return Task.Delay(TimeSpan.FromMinutes(5), token).ContinueWith(_ => new byte[0],
+                               TaskScheduler.Default);
+                       }, TimeZoneInfo.Utc))
+            {
+                var readTask = rows.ReadAsync();
+                await fetchStarted.Task;
+
+                rows.Dispose();
+
+                var completed = await Task.WhenAny(fetchCancelled.Task, Task.Delay(TimeSpan.FromSeconds(2)));
+                Assert.Same(fetchCancelled.Task, completed);
+                await Assert.ThrowsAsync<ObjectDisposedException>(async () => await readTask);
             }
         }
 

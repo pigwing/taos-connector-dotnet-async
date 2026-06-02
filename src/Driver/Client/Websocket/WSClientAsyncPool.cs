@@ -79,13 +79,15 @@ namespace TDengine.Driver.Client.Websocket
         {
             ThrowIfDisposed();
             var startTimestamp = Stopwatch.GetTimestamp();
+            Exception lastCreationException = null;
             using (var timeoutCts = new CancellationTokenSource(_options.ConnectionTimeout))
             using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token,
                        cancellationToken, _disposeCts.Token))
             {
                 try
                 {
-                    return await AcquireCoreAsync(startTimestamp, linkedCts.Token).ConfigureAwait(false);
+                    return await AcquireCoreAsync(startTimestamp, linkedCts.Token,
+                        e => lastCreationException = e).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -100,7 +102,8 @@ namespace TDengine.Driver.Client.Websocket
                     }
 
                     Interlocked.Increment(ref _acquireTimeoutCount);
-                    throw new TimeoutException("Timed out waiting for a WebSocket async connection from the pool.");
+                    throw new TimeoutException("Timed out waiting for a WebSocket async connection from the pool.",
+                        lastCreationException);
                 }
             }
         }
@@ -108,38 +111,59 @@ namespace TDengine.Driver.Client.Websocket
         public async Task WarmupAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
-            while (Volatile.Read(ref _idleConnections) < _options.MinIdle &&
-                   Volatile.Read(ref _totalConnections) < _options.MaximumPoolSize)
+            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,
+                       _disposeCts.Token))
             {
-                if (!TryReserveConnectionSlot())
-                {
-                    return;
-                }
-
-                PooledConnection connection = null;
                 try
                 {
-                    connection = await CreateConnectionAsync(PooledConnection.StateActive, cancellationToken)
-                        .ConfigureAwait(false);
-                    ReturnIdleConnection(connection);
-                    connection = null;
-                }
-                catch
-                {
-                    if (connection == null)
+                    while (Volatile.Read(ref _idleConnections) < _options.MinIdle &&
+                           Volatile.Read(ref _totalConnections) < _options.MaximumPoolSize &&
+                           Volatile.Read(ref _disposed) == 0)
                     {
-                        Interlocked.Decrement(ref _totalConnections);
-                    }
+                        linkedCts.Token.ThrowIfCancellationRequested();
+                        if (!TryReserveConnectionSlot())
+                        {
+                            return;
+                        }
 
-                    throw;
-                }
-                finally
-                {
-                    if (connection != null)
-                    {
-                        Interlocked.Decrement(ref _totalConnections);
-                        await DisposeClientAsync(connection.Client, true).ConfigureAwait(false);
+                        PooledConnection connection = null;
+                        try
+                        {
+                            connection = await CreateConnectionAsync(PooledConnection.StateActive, linkedCts.Token)
+                                .ConfigureAwait(false);
+                            if (Volatile.Read(ref _disposed) == 1)
+                            {
+                                throw new ObjectDisposedException(nameof(WSClientAsyncPool));
+                            }
+
+                            ReturnIdleConnection(connection);
+                            connection = null;
+                        }
+                        catch
+                        {
+                            if (connection == null)
+                            {
+                                Interlocked.Decrement(ref _totalConnections);
+                            }
+
+                            throw;
+                        }
+                        finally
+                        {
+                            if (connection != null)
+                            {
+                                Interlocked.Exchange(ref connection.State, PooledConnection.StateClosed);
+                                _connections.TryRemove(connection, out _);
+                                Interlocked.Decrement(ref _totalConnections);
+                                await DisposeClientAsync(connection.Client, true).ConfigureAwait(false);
+                            }
+                        }
                     }
+                }
+                catch (OperationCanceledException) when (_disposeCts.IsCancellationRequested &&
+                                                        !cancellationToken.IsCancellationRequested)
+                {
+                    throw new ObjectDisposedException(nameof(WSClientAsyncPool));
                 }
             }
         }
@@ -180,7 +204,7 @@ namespace TDengine.Driver.Client.Websocket
         }
 
         private async Task<ITDengineClientAsync> AcquireCoreAsync(long startTimestamp,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, Action<Exception> creationFailure)
         {
             var backoff = _options.CreationRetryBackoff;
             while (true)
@@ -191,7 +215,13 @@ namespace TDengine.Driver.Client.Websocket
                 {
                     if (connection.Client.ConnectionAvailable() && !IsExpired(connection))
                     {
-                        return CreateLease(connection, startTimestamp);
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            await ReleaseCanceledActivatedConnectionAsync(connection, true).ConfigureAwait(false);
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
+
+                        return await CreateLeaseAsync(connection, startTimestamp).ConfigureAwait(false);
                     }
 
                     Interlocked.Decrement(ref _activeConnections);
@@ -202,23 +232,55 @@ namespace TDengine.Driver.Client.Websocket
 
                 if (TryReserveConnectionSlot())
                 {
+                    PooledConnection createdConnection = null;
                     try
                     {
-                        connection = await CreateConnectionAsync(PooledConnection.StateActive, cancellationToken)
+                        createdConnection = await CreateConnectionAsync(PooledConnection.StateActive, cancellationToken)
                             .ConfigureAwait(false);
+                        cancellationToken.ThrowIfCancellationRequested();
                         Interlocked.Increment(ref _activeConnections);
-                        return CreateLease(connection, startTimestamp);
+                        var lease = await CreateLeaseAsync(createdConnection, startTimestamp).ConfigureAwait(false);
+                        createdConnection = null;
+                        return lease;
                     }
-                    catch
+                    catch (OperationCanceledException)
                     {
-                        Interlocked.Decrement(ref _totalConnections);
+                        if (createdConnection == null)
+                        {
+                            Interlocked.Decrement(ref _totalConnections);
+                            ReleaseWaiter();
+                        }
+                        else
+                        {
+                            await CloseActiveConnection(createdConnection, false, true).ConfigureAwait(false);
+                        }
+
                         Interlocked.Increment(ref _creationFailureCount);
-                        ReleaseWaiter();
+                        throw;
+                    }
+                    catch (Exception e)
+                    {
+                        creationFailure?.Invoke(e);
+                        if (createdConnection == null)
+                        {
+                            Interlocked.Decrement(ref _totalConnections);
+                            ReleaseWaiter();
+                        }
+                        else
+                        {
+                            await CloseActiveConnection(createdConnection, false, true).ConfigureAwait(false);
+                        }
+
+                        Interlocked.Increment(ref _creationFailureCount);
 
                         if (backoff > TimeSpan.Zero)
                         {
                             await Task.Delay(backoff, cancellationToken).ConfigureAwait(false);
                             backoff = NextBackoff(backoff);
+                        }
+                        else
+                        {
+                            throw;
                         }
 
                         continue;
@@ -232,7 +294,13 @@ namespace TDengine.Driver.Client.Websocket
                     {
                         if (connection.Client.ConnectionAvailable() && !IsExpired(connection))
                         {
-                            return CreateLease(connection, startTimestamp);
+                            if (cancellationToken.IsCancellationRequested)
+                            {
+                                await ReleaseCanceledActivatedConnectionAsync(connection, true).ConfigureAwait(false);
+                                cancellationToken.ThrowIfCancellationRequested();
+                            }
+
+                            return await CreateLeaseAsync(connection, startTimestamp).ConfigureAwait(false);
                         }
 
                         Interlocked.Decrement(ref _activeConnections);
@@ -250,11 +318,23 @@ namespace TDengine.Driver.Client.Websocket
             }
         }
 
-        private ITDengineClientAsync CreateLease(PooledConnection connection, long startTimestamp)
+        private async Task<ITDengineClientAsync> CreateLeaseAsync(PooledConnection connection, long startTimestamp)
         {
-            RecordAcquireDuration(startTimestamp);
+            if (Volatile.Read(ref _disposed) == 1)
+            {
+                await ReleaseCanceledActivatedConnectionAsync(connection, true).ConfigureAwait(false);
+                throw new ObjectDisposedException(nameof(WSClientAsyncPool));
+            }
+
             var lease = new PoolLease(this, connection, _options.LeakDetectionThreshold > TimeSpan.Zero);
             _activeLeases.TryAdd(lease, 0);
+            if (Volatile.Read(ref _disposed) == 1)
+            {
+                await lease.ForceCloseAsync(true).ConfigureAwait(false);
+                throw new ObjectDisposedException(nameof(WSClientAsyncPool));
+            }
+
+            RecordAcquireDuration(startTimestamp);
             Interlocked.Increment(ref _acquireCount);
             return new PooledTDengineClientAsync(lease);
         }
@@ -440,6 +520,18 @@ namespace TDengine.Driver.Client.Websocket
             ReturnIdleConnection(connection);
         }
 
+        private async Task ForceCloseLeaseAsync(PoolLease lease, bool preferAsync)
+        {
+            if (!_activeLeases.TryRemove(lease, out _))
+            {
+                return;
+            }
+
+            Interlocked.Decrement(ref _activeConnections);
+            await CloseActiveConnection(lease.Connection, false, preferAsync).ConfigureAwait(false);
+        }
+
+
         private async Task CloseActiveConnection(PooledConnection connection, bool recycled, bool preferAsync)
         {
             if (Interlocked.Exchange(ref connection.State, PooledConnection.StateClosed) ==
@@ -457,8 +549,18 @@ namespace TDengine.Driver.Client.Websocket
                 Interlocked.Increment(ref _recycledConnectionCount);
             }
 
-            await DisposeClientAsync(connection.Client, preferAsync).ConfigureAwait(false);
-            ReleaseWaiter();
+            try
+            {
+                await DisposeClientAsync(connection.Client, preferAsync).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceWarning("WSClientAsyncPool failed to dispose active connection: " + e);
+            }
+            finally
+            {
+                ReleaseWaiter();
+            }
         }
 
         private async Task CloseIdleConnectionAsync(PooledConnection connection, bool recycled, bool preferAsync)
@@ -484,26 +586,55 @@ namespace TDengine.Driver.Client.Websocket
                 Interlocked.Increment(ref _recycledConnectionCount);
             }
 
-            await DisposeClientAsync(connection.Client, preferAsync).ConfigureAwait(false);
-            ReleaseWaiter();
+            try
+            {
+                await DisposeClientAsync(connection.Client, preferAsync).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                Trace.TraceWarning("WSClientAsyncPool failed to dispose idle connection: " + e);
+            }
+            finally
+            {
+                ReleaseWaiter();
+            }
+        }
+
+        private async Task ReleaseCanceledActivatedConnectionAsync(PooledConnection connection, bool preferAsync)
+        {
+            Interlocked.Decrement(ref _activeConnections);
+            if (Volatile.Read(ref _disposed) == 1 || !connection.Client.ConnectionAvailable())
+            {
+                await CloseActiveConnection(connection, false, preferAsync).ConfigureAwait(false);
+                return;
+            }
+
+            if (IsExpired(connection))
+            {
+                await CloseActiveConnection(connection, true, preferAsync).ConfigureAwait(false);
+                return;
+            }
+
+            ReturnIdleConnection(connection);
         }
 
         private async Task HousekeepingLoopAsync(CancellationToken cancellationToken)
         {
-            try
+            while (!cancellationToken.IsCancellationRequested)
             {
-                while (!cancellationToken.IsCancellationRequested)
+                try
                 {
                     await Task.Delay(_options.HousekeepingInterval, cancellationToken).ConfigureAwait(false);
                     await RunHousekeepingAsync(cancellationToken).ConfigureAwait(false);
                 }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-            }
-            catch (Exception e)
-            {
-                Trace.TraceWarning("WSClientAsyncPool housekeeping stopped: " + e);
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception e)
+                {
+                    Trace.TraceWarning("WSClientAsyncPool housekeeping failed: " + e);
+                }
             }
         }
 
@@ -573,7 +704,11 @@ namespace TDengine.Driver.Client.Websocket
                 }
                 catch
                 {
-                    Interlocked.Decrement(ref _totalConnections);
+                    if (connection == null)
+                    {
+                        Interlocked.Decrement(ref _totalConnections);
+                    }
+
                     Interlocked.Increment(ref _creationFailureCount);
                     return;
                 }
@@ -581,6 +716,9 @@ namespace TDengine.Driver.Client.Websocket
                 {
                     if (connection != null)
                     {
+                        Interlocked.Exchange(ref connection.State, PooledConnection.StateClosed);
+                        _connections.TryRemove(connection, out _);
+                        Interlocked.Decrement(ref _totalConnections);
                         await DisposeClientAsync(connection.Client, true).ConfigureAwait(false);
                     }
                 }
@@ -604,14 +742,21 @@ namespace TDengine.Driver.Client.Websocket
 
                 var args = new WSClientAsyncPoolLeakEventArgs(elapsed, lease.CheckoutStackTrace);
                 var callback = _options.LeakDetected;
-                if (callback != null)
+                try
                 {
-                    callback(args);
+                    if (callback != null)
+                    {
+                        callback(args);
+                    }
+                    else
+                    {
+                        Trace.TraceWarning("Potential WSClientAsyncPool connection leak. Elapsed: " +
+                                           elapsed + Environment.NewLine + lease.CheckoutStackTrace);
+                    }
                 }
-                else
+                catch (Exception e)
                 {
-                    Trace.TraceWarning("Potential WSClientAsyncPool connection leak. Elapsed: " +
-                                       elapsed + Environment.NewLine + lease.CheckoutStackTrace);
+                    Trace.TraceWarning("WSClientAsyncPool leak detection callback failed: " + e);
                 }
             }
         }
@@ -625,6 +770,7 @@ namespace TDengine.Driver.Client.Websocket
 
             _disposeCts.Cancel();
             await WaitHousekeepingAsync().ConfigureAwait(false);
+            await CloseActiveLeasesAsync(preferAsync).ConfigureAwait(false);
             await CloseIdleConnectionsAsync(preferAsync).ConfigureAwait(false);
             _threadCache.Dispose();
             _idleSignal.Dispose();
@@ -653,6 +799,43 @@ namespace TDengine.Driver.Client.Websocket
             while (_idleQueue.TryDequeue(out connection))
             {
                 Interlocked.Exchange(ref connection.Queued, 0);
+            }
+        }
+
+        private static async Task DisposeResourceAsync(IDisposable resource, bool preferAsync)
+        {
+            if (resource == null)
+            {
+                return;
+            }
+
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
+            if (preferAsync && resource is IAsyncDisposable asyncDisposable)
+            {
+                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                return;
+            }
+#endif
+            resource.Dispose();
+            await CompletedTask().ConfigureAwait(false);
+        }
+
+        private static async Task TryDisposeResourceAsync(IDisposable resource, bool preferAsync)
+        {
+            try
+            {
+                await DisposeResourceAsync(resource, preferAsync).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
+        private async Task CloseActiveLeasesAsync(bool preferAsync)
+        {
+            foreach (var lease in _activeLeases.Keys)
+            {
+                await lease.ForceCloseAsync(preferAsync).ConfigureAwait(false);
             }
         }
 
@@ -836,6 +1019,14 @@ namespace TDengine.Driver.Client.Websocket
                 }
             }
 
+            internal void ThrowIfReturned(string objectName)
+            {
+                if (Volatile.Read(ref _returned) == 1)
+                {
+                    throw new ObjectDisposedException(objectName);
+                }
+            }
+
             internal void AddClientOperationReference()
             {
                 ThrowIfClientDisposed();
@@ -866,9 +1057,23 @@ namespace TDengine.Driver.Client.Websocket
 
             internal async Task ReleaseReferenceAsync(bool preferAsync)
             {
-                if (Interlocked.Decrement(ref _references) != 0)
+                while (true)
                 {
-                    return;
+                    var current = Volatile.Read(ref _references);
+                    if (current <= 0)
+                    {
+                        return;
+                    }
+
+                    if (Interlocked.CompareExchange(ref _references, current - 1, current) == current)
+                    {
+                        if (current != 1)
+                        {
+                            return;
+                        }
+
+                        break;
+                    }
                 }
 
                 if (Interlocked.Exchange(ref _returned, 1) == 1)
@@ -877,6 +1082,18 @@ namespace TDengine.Driver.Client.Websocket
                 }
 
                 await _pool.ReturnConnectionAsync(this, preferAsync).ConfigureAwait(false);
+            }
+
+            internal async Task ForceCloseAsync(bool preferAsync)
+            {
+                Interlocked.Exchange(ref _clientDisposed, 1);
+                Interlocked.Exchange(ref _references, 0);
+                if (Interlocked.Exchange(ref _returned, 1) == 1)
+                {
+                    return;
+                }
+
+                await _pool.ForceCloseLeaseAsync(this, preferAsync).ConfigureAwait(false);
             }
 
             internal void DisposeClient()
@@ -935,12 +1152,37 @@ namespace TDengine.Driver.Client.Websocket
             public async Task<IStmtAsync> StmtInitAsync(long reqId, CancellationToken cancellationToken)
             {
                 _lease.AddClientOperationReference();
+                var childReferenceAdded = false;
+                IStmtAsync stmt = null;
                 try
                 {
-                    var stmt = await _lease.Connection.Client.StmtInitAsync(reqId, cancellationToken)
+                    stmt = await _lease.Connection.Client.StmtInitAsync(reqId, cancellationToken)
                         .ConfigureAwait(false);
+                    _lease.ThrowIfClientDisposed();
+                    if (stmt == null)
+                    {
+                        throw new InvalidOperationException("The WebSocket async client returned a null statement.");
+                    }
+
                     _lease.AddChildReference();
-                    return new PooledStmtAsync(stmt, _lease);
+                    childReferenceAdded = true;
+                    var pooledStmt = new PooledStmtAsync(stmt, _lease);
+                    stmt = null;
+                    return pooledStmt;
+                }
+                catch
+                {
+                    if (stmt != null)
+                    {
+                        await TryDisposeResourceAsync(stmt, true).ConfigureAwait(false);
+                    }
+
+                    if (childReferenceAdded)
+                    {
+                        await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                    }
+
+                    throw;
                 }
                 finally
                 {
@@ -967,12 +1209,37 @@ namespace TDengine.Driver.Client.Websocket
                 CancellationToken cancellationToken)
             {
                 _lease.AddClientOperationReference();
+                var childReferenceAdded = false;
+                IRowsAsync rows = null;
                 try
                 {
-                    var rows = await _lease.Connection.Client.QueryAsync(query, reqId, cancellationToken)
+                    rows = await _lease.Connection.Client.QueryAsync(query, reqId, cancellationToken)
                         .ConfigureAwait(false);
+                    _lease.ThrowIfClientDisposed();
+                    if (rows == null)
+                    {
+                        throw new InvalidOperationException("The WebSocket async client returned a null rows object.");
+                    }
+
                     _lease.AddChildReference();
-                    return new PooledRowsAsync(rows, _lease);
+                    childReferenceAdded = true;
+                    var pooledRows = new PooledRowsAsync(rows, _lease);
+                    rows = null;
+                    return pooledRows;
+                }
+                catch
+                {
+                    if (rows != null)
+                    {
+                        await TryDisposeResourceAsync(rows, true).ConfigureAwait(false);
+                    }
+
+                    if (childReferenceAdded)
+                    {
+                        await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                    }
+
+                    throw;
                 }
                 finally
                 {
@@ -1000,8 +1267,10 @@ namespace TDengine.Driver.Client.Websocket
                 _lease.AddClientOperationReference();
                 try
                 {
-                    return await _lease.Connection.Client.ExecAsync(query, reqId, cancellationToken)
+                    var affected = await _lease.Connection.Client.ExecAsync(query, reqId, cancellationToken)
                         .ConfigureAwait(false);
+                    _lease.ThrowIfClientDisposed();
+                    return affected;
                 }
                 finally
                 {
@@ -1023,6 +1292,7 @@ namespace TDengine.Driver.Client.Websocket
                 {
                     await _lease.Connection.Client.SchemalessInsertAsync(lines, protocol, precision, ttl, reqId,
                         cancellationToken).ConfigureAwait(false);
+                    _lease.ThrowIfClientDisposed();
                 }
                 finally
                 {
@@ -1051,8 +1321,8 @@ namespace TDengine.Driver.Client.Websocket
 
             internal PooledRowsAsync(IRowsAsync inner, PoolLease lease)
             {
-                _inner = inner;
-                _lease = lease;
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                _lease = lease ?? throw new ArgumentNullException(nameof(lease));
             }
 
             public bool HasRows => _inner.HasRows;
@@ -1118,12 +1388,25 @@ namespace TDengine.Driver.Client.Websocket
 
             public Task<bool> ReadAsync()
             {
-                return _inner.ReadAsync();
+                return ReadAsync(CancellationToken.None);
             }
 
-            public Task<bool> ReadAsync(CancellationToken cancellationToken)
+            public async Task<bool> ReadAsync(CancellationToken cancellationToken)
             {
-                return _inner.ReadAsync(cancellationToken);
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    var hasRows = await _inner.ReadAsync(cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledRowsAsync));
+                    return hasRows;
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public bool IsDBNull(int ordinal)
@@ -1191,6 +1474,14 @@ namespace TDengine.Driver.Client.Websocket
                 return _inner.GetDateTimeOffset(ordinal);
             }
 
+            private void ThrowIfDisposed()
+            {
+                if (Volatile.Read(ref _disposed) == 1)
+                {
+                    throw new ObjectDisposedException(nameof(PooledRowsAsync));
+                }
+            }
+
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
             public async ValueTask DisposeAsync()
             {
@@ -1236,98 +1527,220 @@ namespace TDengine.Driver.Client.Websocket
 
             internal PooledStmtAsync(IStmtAsync inner, PoolLease lease)
             {
-                _inner = inner;
-                _lease = lease;
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                _lease = lease ?? throw new ArgumentNullException(nameof(lease));
             }
 
             public Task PrepareAsync(string query)
             {
-                return _inner.PrepareAsync(query);
+                return PrepareAsync(query, CancellationToken.None);
             }
 
-            public Task PrepareAsync(string query, CancellationToken cancellationToken)
+            public async Task PrepareAsync(string query, CancellationToken cancellationToken)
             {
-                return _inner.PrepareAsync(query, cancellationToken);
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    await _inner.PrepareAsync(query, cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public bool IsInsert()
             {
+                ThrowIfDisposed();
                 return _inner.IsInsert();
             }
 
             public Task SetTableNameAsync(string tableName)
             {
-                return _inner.SetTableNameAsync(tableName);
+                return SetTableNameAsync(tableName, CancellationToken.None);
             }
 
-            public Task SetTableNameAsync(string tableName, CancellationToken cancellationToken)
+            public async Task SetTableNameAsync(string tableName, CancellationToken cancellationToken)
             {
-                return _inner.SetTableNameAsync(tableName, cancellationToken);
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    await _inner.SetTableNameAsync(tableName, cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public Task SetTagsAsync(object[] tags)
             {
-                return _inner.SetTagsAsync(tags);
+                return SetTagsAsync(tags, CancellationToken.None);
             }
 
-            public Task SetTagsAsync(object[] tags, CancellationToken cancellationToken)
+            public async Task SetTagsAsync(object[] tags, CancellationToken cancellationToken)
             {
-                return _inner.SetTagsAsync(tags, cancellationToken);
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    await _inner.SetTagsAsync(tags, cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public Task<TaosFieldE[]> GetTagFieldsAsync()
             {
-                return _inner.GetTagFieldsAsync();
+                return GetTagFieldsCoreAsync();
             }
 
             public Task<TaosFieldE[]> GetColFieldsAsync()
             {
-                return _inner.GetColFieldsAsync();
+                return GetColFieldsCoreAsync();
+            }
+
+            private async Task<TaosFieldE[]> GetTagFieldsCoreAsync()
+            {
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    var fields = await _inner.GetTagFieldsAsync().ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                    return fields;
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
+            }
+
+            private async Task<TaosFieldE[]> GetColFieldsCoreAsync()
+            {
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    var fields = await _inner.GetColFieldsAsync().ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                    return fields;
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public Task BindRowAsync(object[] row)
             {
-                return _inner.BindRowAsync(row);
+                return BindRowAsync(row, CancellationToken.None);
             }
 
-            public Task BindRowAsync(object[] row, CancellationToken cancellationToken)
+            public async Task BindRowAsync(object[] row, CancellationToken cancellationToken)
             {
-                return _inner.BindRowAsync(row, cancellationToken);
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    await _inner.BindRowAsync(row, cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public Task BindColumnAsync(TaosFieldE[] fields, params Array[] arrays)
             {
-                return _inner.BindColumnAsync(fields, arrays);
+                return BindColumnAsync(fields, CancellationToken.None, arrays);
             }
 
-            public Task BindColumnAsync(TaosFieldE[] fields, CancellationToken cancellationToken,
+            public async Task BindColumnAsync(TaosFieldE[] fields, CancellationToken cancellationToken,
                 params Array[] arrays)
             {
-                return _inner.BindColumnAsync(fields, cancellationToken, arrays);
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    await _inner.BindColumnAsync(fields, cancellationToken, arrays).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public Task AddBatchAsync()
             {
-                return _inner.AddBatchAsync();
+                return AddBatchAsync(CancellationToken.None);
             }
 
-            public Task AddBatchAsync(CancellationToken cancellationToken)
+            public async Task AddBatchAsync(CancellationToken cancellationToken)
             {
-                return _inner.AddBatchAsync(cancellationToken);
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    await _inner.AddBatchAsync(cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public Task ExecAsync()
             {
-                return _inner.ExecAsync();
+                return ExecAsync(CancellationToken.None);
             }
 
-            public Task ExecAsync(CancellationToken cancellationToken)
+            public async Task ExecAsync(CancellationToken cancellationToken)
             {
-                return _inner.ExecAsync(cancellationToken);
+                ThrowIfDisposed();
+                _lease.AddChildReference();
+                try
+                {
+                    ThrowIfDisposed();
+                    await _inner.ExecAsync(cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
             }
 
             public long Affected()
             {
+                ThrowIfDisposed();
                 return _inner.Affected();
             }
 
@@ -1338,9 +1751,53 @@ namespace TDengine.Driver.Client.Websocket
 
             public async Task<IRowsAsync> ResultAsync(CancellationToken cancellationToken)
             {
-                var rows = await _inner.ResultAsync(cancellationToken).ConfigureAwait(false);
+                ThrowIfDisposed();
                 _lease.AddChildReference();
-                return new PooledRowsAsync(rows, _lease);
+                var resultReferenceAdded = false;
+                IRowsAsync rows = null;
+                try
+                {
+                    ThrowIfDisposed();
+                    rows = await _inner.ResultAsync(cancellationToken).ConfigureAwait(false);
+                    ThrowIfDisposed();
+                    _lease.ThrowIfReturned(nameof(PooledStmtAsync));
+                    if (rows == null)
+                    {
+                        throw new InvalidOperationException("The WebSocket async statement returned a null rows object.");
+                    }
+
+                    _lease.AddChildReference();
+                    resultReferenceAdded = true;
+                    var pooledRows = new PooledRowsAsync(rows, _lease);
+                    rows = null;
+                    return pooledRows;
+                }
+                catch
+                {
+                    if (rows != null)
+                    {
+                        await TryDisposeResourceAsync(rows, true).ConfigureAwait(false);
+                    }
+
+                    if (resultReferenceAdded)
+                    {
+                        await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                    }
+
+                    throw;
+                }
+                finally
+                {
+                    await _lease.ReleaseReferenceAsync(true).ConfigureAwait(false);
+                }
+            }
+
+            private void ThrowIfDisposed()
+            {
+                if (Volatile.Read(ref _disposed) == 1)
+                {
+                    throw new ObjectDisposedException(nameof(PooledStmtAsync));
+                }
             }
 
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER

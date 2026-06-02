@@ -193,6 +193,12 @@ namespace Driver.Test.Client.Query
         }
 
         [Fact]
+        public async Task WebSocketAsyncRowsDisposeCancelsInFlightFetchTest()
+        {
+            await this.RowsDisposeCancelsInFlightFetchAsyncTest();
+        }
+
+        [Fact]
         public async Task WebSocketAsyncRowsInvalidFetchBlockThrowsProtocolErrorTest()
         {
             await this.RowsInvalidFetchBlockThrowsProtocolErrorAsyncTest();

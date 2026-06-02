@@ -23,6 +23,7 @@ namespace TDengine.Driver.Client.Websocket
         private readonly BlockReader _blockReader;
         private readonly Func<ulong, CancellationToken, Task<byte[]>> _fetchRawBlockAsync;
         private readonly object _fetchLock = new object();
+        private CancellationTokenSource _fetchCts;
         private int _freed;
         private int _currentRow;
         private int _blockSize;
@@ -118,9 +119,23 @@ namespace TDengine.Driver.Client.Websocket
         private async Task FreeAsync(CancellationToken cancellationToken)
         {
             if (Interlocked.Exchange(ref _freed, 1) == 1) return;
+            Task<byte[]> pendingFetchTask;
+            CancellationTokenSource pendingFetchCts;
+            lock (_fetchLock)
+            {
+                pendingFetchTask = _fetchTask;
+                pendingFetchCts = _fetchCts;
+                _fetchTask = null;
+                _fetchCts = null;
+            }
 
             try
             {
+                if (pendingFetchCts != null)
+                {
+                    pendingFetchCts.Cancel();
+                }
+
                 if (_connection != null && _connection.IsAvailable() && !_isUpdate)
                 {
                     await _connection.FreeResultAsync(_resultId).ConfigureAwait(false);
@@ -128,13 +143,39 @@ namespace TDengine.Driver.Client.Websocket
             }
             finally
             {
-                ClearFetchTask(observeFault: true);
+                ObserveFetchTaskAndDisposeCancellationSource(pendingFetchTask, pendingFetchCts);
+
                 _block = null;
                 if (_blockReader != null)
                 {
                     _blockReader.ClearBlock();
                 }
             }
+        }
+
+        private static void ObserveFetchTaskAndDisposeCancellationSource(Task task,
+            CancellationTokenSource cancellationTokenSource)
+        {
+            if (task == null)
+            {
+                cancellationTokenSource?.Dispose();
+                return;
+            }
+
+            task.ContinueWith(t =>
+            {
+                try
+                {
+                    if (t.IsFaulted)
+                    {
+                        GC.KeepAlive(t.Exception);
+                    }
+                }
+                finally
+                {
+                    cancellationTokenSource?.Dispose();
+                }
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
         public long GetBytes(int ordinal, long dataOffset, byte[] buffer, int bufferOffset, int length)
@@ -316,9 +357,11 @@ namespace TDengine.Driver.Client.Websocket
             cancellationToken.ThrowIfCancellationRequested();
             lock (_fetchLock)
             {
+                ThrowIfFreed();
                 if (_fetchTask == null)
                 {
-                    _fetchTask = FetchRawBlockAsync(CancellationToken.None);
+                    _fetchCts = new CancellationTokenSource();
+                    _fetchTask = FetchRawBlockAsync(_fetchCts.Token);
                 }
 
                 return _fetchTask;
@@ -338,13 +381,21 @@ namespace TDengine.Driver.Client.Websocket
         private void ClearFetchTask(Task<byte[]> task = null, bool observeFault = false)
         {
             Task<byte[]> oldTask = null;
+            CancellationTokenSource oldCts = null;
             lock (_fetchLock)
             {
                 if (task == null || ReferenceEquals(_fetchTask, task))
                 {
                     oldTask = _fetchTask;
+                    oldCts = _fetchCts;
                     _fetchTask = null;
+                    _fetchCts = null;
                 }
+            }
+
+            if (oldCts != null)
+            {
+                oldCts.Dispose();
             }
 
             if (observeFault && oldTask != null)

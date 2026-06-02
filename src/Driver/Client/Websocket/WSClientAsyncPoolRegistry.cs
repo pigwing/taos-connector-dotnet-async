@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -13,7 +14,7 @@ namespace TDengine.Driver.Client.Websocket
         private static readonly ConcurrentDictionary<string, Lazy<WSClientAsyncPool>> Pools =
             new ConcurrentDictionary<string, Lazy<WSClientAsyncPool>>(StringComparer.Ordinal);
 
-        internal static Task<ITDengineClientAsync> AcquireAsync(ConnectionStringBuilder builder,
+        internal static async Task<ITDengineClientAsync> AcquireAsync(ConnectionStringBuilder builder,
             CancellationToken cancellationToken)
         {
             if (builder == null) throw new ArgumentNullException(nameof(builder));
@@ -27,20 +28,53 @@ namespace TDengine.Driver.Client.Websocket
                 new WSClientAsyncPool(CloneBuilderForPool(builder), builder.CreateWebSocketAsyncPoolOptions()),
                 LazyThreadSafetyMode.ExecutionAndPublication));
 
+            WSClientAsyncPool pool;
             try
             {
-                return lazy.Value.AcquireAsync(cancellationToken);
+                pool = lazy.Value;
             }
             catch
             {
-                if (lazy.IsValueCreated)
+                Lazy<WSClientAsyncPool> removed;
+                if (TryRemovePool(key, lazy, out removed) && removed.IsValueCreated)
                 {
-                    Pools.TryRemove(key, out _);
-                    lazy.Value.Dispose();
+                    removed.Value.Dispose();
                 }
 
                 throw;
             }
+
+            try
+            {
+                return await pool.AcquireAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (pool.GetMetrics().TotalConnections == 0)
+                {
+                    Lazy<WSClientAsyncPool> removed;
+                    if (TryRemovePool(key, lazy, out removed) && removed.IsValueCreated)
+                    {
+                        removed.Value.Dispose();
+                    }
+                }
+
+                throw;
+            }
+        }
+
+        private static bool TryRemovePool(string key, Lazy<WSClientAsyncPool> lazy,
+            out Lazy<WSClientAsyncPool> removed)
+        {
+            var pools = (ICollection<KeyValuePair<string, Lazy<WSClientAsyncPool>>>)Pools;
+            if (pools.Remove(new KeyValuePair<string, Lazy<WSClientAsyncPool>>(key, lazy)))
+            {
+                removed = lazy;
+                return true;
+            }
+
+            removed = null;
+            return false;
         }
 
         internal static WSClientAsyncPoolMetrics GetMetrics(ConnectionStringBuilder builder)
