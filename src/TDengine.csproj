@@ -5,7 +5,7 @@
     <PackageId>TDengine.Connector.Async</PackageId>
     <PackageIcon>image\logo.jpg</PackageIcon>
     <PackageReadmeFile>docs\README.md</PackageReadmeFile>
-    <Version>3.2.1.3</Version>
+    <Version>3.2.1.4</Version>
     <InformationalVersion>$(Version)-$(SourceRevisionId)</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <Authors>taosdata</Authors>
