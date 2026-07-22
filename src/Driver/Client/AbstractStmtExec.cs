@@ -1,6 +1,8 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 #if NETSTANDARD2_1_OR_GREATER || NET5_0_OR_GREATER || NETCOREAPP2_1_OR_GREATER
 using System.Buffers.Binary;
@@ -10,7 +12,9 @@ namespace TDengine.Driver.Client
 {
     public abstract partial class AbstractStmt
     {
-        public void Exec()
+        private static readonly Encoding StmtUtf8Encoding = new UTF8Encoding(false, true);
+
+        public virtual void Exec()
         {
             ThrowIfDisposed();
             if (!_addBatched)
@@ -20,7 +24,7 @@ namespace TDengine.Driver.Client
 
             try
             {
-                var buffer = GenerateBindBinary();
+                var buffer = GenerateBindBinary(false, out _);
 
                 // print buffer
                 // StringBuilder sb = new StringBuilder();
@@ -69,6 +73,14 @@ namespace TDengine.Driver.Client
         private const int HaveLengthOffset = 13;
         private const int FixedBufferLengthOffset = 14;
         private const int FixedBufferOffset = 18;
+        internal const int MaximumBindBinarySize = 256 * 1024 * 1024;
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct Int32SingleUnion
+        {
+            [FieldOffset(0)] internal int Int32;
+            [FieldOffset(0)] internal float Single;
+        }
 
         private int WriteBindTag(TaosFieldE[] tagFields, object[] tags, byte[] buffer, int offset)
         {
@@ -92,7 +104,8 @@ namespace TDengine.Driver.Client
                         // have length
                         buffer[startOffset + HaveLengthOffset] = 1;
                         // length
-                        WriteU32(buffer, startOffset + HaveLengthOffset + 4, 0);
+                        WriteU32(buffer, startOffset + HaveLengthOffset + 1, 0);
+                        WriteU32(buffer, startOffset + HaveLengthOffset + 1 + sizeof(uint), 0);
                         // write TotalLength
                         totalLength = 4 + // TotalLength field length
                                       4 + // DataType field length
@@ -154,13 +167,7 @@ namespace TDengine.Driver.Client
                                 WriteU64(buffer, startOffset + FixedBufferOffset, ulongVal);
                                 break;
                             case float floatVal:
-#if NETSTANDARD2_1_OR_GREATER ||NET5_0_OR_GREATER||NETCOREAPP2_0_OR_GREATER
-                                var floatInt = BitConverter.SingleToInt32Bits(floatVal);
-                                WriteU32(buffer, startOffset + FixedBufferOffset, (uint)floatInt);
-#else
-                                var floatBytes = BitConverter.GetBytes(floatVal);
-                                Buffer.BlockCopy(floatBytes, 0, buffer, startOffset + FixedBufferOffset, 4);
-#endif
+                                WriteU32(buffer, startOffset + FixedBufferOffset, SingleToUInt32Bits(floatVal));
                                 break;
                             case double doubleVal:
                                 // write BufferLength
@@ -200,16 +207,15 @@ namespace TDengine.Driver.Client
                         switch (tags[i])
                         {
                             case string strVal:
-                                dataLength = (uint)Encoding.UTF8.GetByteCount(strVal);
+                                dataLength = (uint)StmtUtf8Encoding.GetByteCount(strVal);
                                 // write Buffer
-                                Encoding.UTF8.GetBytes(strVal, 0, strVal.Length, buffer,
+                                StmtUtf8Encoding.GetBytes(strVal, 0, strVal.Length, buffer,
                                     startOffset + HaveLengthOffset + 1 + 4 + 4);
                                 break;
                             case byte[] binVal:
                                 dataLength = (uint)binVal.Length;
                                 // write Buffer
-                                Buffer.BlockCopy(binVal, 0, buffer, startOffset + HaveLengthOffset + 1 + 4 + 4,
-                                    binVal.Length);
+                                CopyBytes(binVal, buffer, startOffset + HaveLengthOffset + 1 + 4 + 4);
                                 break;
                             default:
                                 throw new ArgumentException(
@@ -280,9 +286,9 @@ namespace TDengine.Driver.Client
                             {
                                 case string strVal:
                                 {
-                                    var length = Encoding.UTF8.GetByteCount(strVal);
+                                    var length = StmtUtf8Encoding.GetByteCount(strVal);
                                     WriteU32(buffer, startOffset + variableLengthOffset + rowIndex * 4, (uint)length);
-                                    Encoding.UTF8.GetBytes(strVal, 0, strVal.Length, buffer, variableOffset);
+                                    StmtUtf8Encoding.GetBytes(strVal, 0, strVal.Length, buffer, variableOffset);
                                     totalVarBufferLength += length;
                                     variableOffset += length;
                                     break;
@@ -291,7 +297,7 @@ namespace TDengine.Driver.Client
                                 {
                                     WriteU32(buffer, startOffset + variableLengthOffset + rowIndex * 4,
                                         (uint)binVal.Length);
-                                    Buffer.BlockCopy(binVal, 0, buffer, variableOffset, binVal.Length);
+                                    CopyBytes(binVal, buffer, variableOffset);
                                     totalVarBufferLength += binVal.Length;
                                     variableOffset += binVal.Length;
                                     break;
@@ -370,13 +376,7 @@ namespace TDengine.Driver.Client
                                     WriteU64(buffer, fixedOffset, ulongVal);
                                     break;
                                 case float floatVal:
-#if NETSTANDARD2_1_OR_GREATER ||NET5_0_OR_GREATER||NETCOREAPP2_0_OR_GREATER
-                                    var floatInt = BitConverter.SingleToInt32Bits(floatVal);
-                                    WriteU32(buffer, fixedOffset, (uint)floatInt);
-#else
-                                    var floatBytes = BitConverter.GetBytes(floatVal);
-                                    Buffer.BlockCopy(floatBytes, 0, buffer, fixedOffset, 4);
-#endif
+                                    WriteU32(buffer, fixedOffset, SingleToUInt32Bits(floatVal));
                                     break;
                                 case double doubleVal:
                                     var doubleInt = BitConverter.DoubleToInt64Bits(doubleVal);
@@ -412,239 +412,228 @@ namespace TDengine.Driver.Client
         }
 
 
-        private byte[] GenerateBindBinary()
+        private byte[] GenerateBindBinary(bool rentFromPool, out int bufferLength)
         {
-            var tableCount = _tableInfos.Count;
-            var colCount = _isInsert ? _colFields.Length : _fieldsCount;
-            var colFields = _isInsert ? _colFields : _queryFields;
-            const uint fixedHeaderLen = 28;
-            var tableNameLengthLen = (uint)0;
-            var tableNameBufferLen = (uint)0;
-
-            var tagsDataLengthLen = (uint)0;
-            var tagsBufferLen = (uint)0;
-            var colsDataLengthLen = (uint)(tableCount * 4);
-            var colsBufferLen = (uint)0;
-
-            var utf8TableNameLen = new short[_needTableName ? tableCount : 0];
-            var tableTagLengthList = new uint[NeedTags ? tableCount : 0];
-            var tableColLengthList = new uint[tableCount];
-            var tableNames = new string[tableCount];
-            var tmpTableIndex = 0;
-            foreach (var tableInfo in _tableInfos)
+            bufferLength = 0;
+            checked
             {
-                // calculate table name
-                if (_needTableName)
+                var tableCount = _tableInfos.Count;
+                if (tableCount == 0)
                 {
-                    var bsCount = Encoding.UTF8.GetByteCount(tableInfo.Key);
-                    utf8TableNameLen[tmpTableIndex] = (short)(bsCount + 1);
-                    tableNameBufferLen += (uint)(bsCount + 1);
-                    tableNames[tmpTableIndex] = tableInfo.Key;
-                }
-                else
-                {
-                    tableNames[0] = string.Empty;
+                    throw new InvalidOperationException("No statement batches are available for execution.");
                 }
 
-                // calculate tags
-                if (NeedTags)
+                var colCount = _isInsert ? _colFields.Length : _fieldsCount;
+                var colFields = _isInsert ? _colFields : _queryFields;
+                if (colFields == null || colFields.Length != colCount)
                 {
-                    var tableTagLength = (uint)0;
-                    for (int i = 0; i < _tagFields.Length; i++)
+                    throw new InvalidOperationException("Statement column metadata is incomplete.");
+                }
+
+                const int fixedHeaderLength = 28;
+                var tableNameLengthsLength = _needTableName ? tableCount * sizeof(ushort) : 0;
+                var tableNameBufferLength = 0;
+                var tagsLengthsLength = NeedTags ? tableCount * sizeof(uint) : 0;
+                var tagsBufferLength = 0;
+                var columnsLengthsLength = tableCount * sizeof(uint);
+                var columnsBufferLength = 0;
+
+                var tableNameLengths = new ushort[_needTableName ? tableCount : 0];
+                var tableTagLengths = new int[NeedTags ? tableCount : 0];
+                var tableColumnLengths = new int[tableCount];
+                var tableNames = new string[tableCount];
+                var tableIndex = 0;
+                foreach (var tableEntry in _tableInfos)
+                {
+                    var tableName = tableEntry.Key;
+                    tableNames[tableIndex] = tableName;
+                    if (_needTableName)
                     {
-                        if (TDengineConstant.IsStmtVarDataType((byte)_tagFields[i].type))
+                        var byteLengthWithTerminator = StmtUtf8Encoding.GetByteCount(tableName) + 1;
+                        if (byteLengthWithTerminator > ushort.MaxValue)
                         {
-                            // variant type
-                            var bsCount = 0;
-                            var tagVal = tableInfo.Value.Tags[i];
-                            if (tagVal != null && !Convert.IsDBNull(tagVal))
+                            throw new ArgumentException(
+                                $"The UTF-8 table name at index {tableIndex} exceeds {ushort.MaxValue - 1} bytes.");
+                        }
+
+                        tableNameLengths[tableIndex] = (ushort)byteLengthWithTerminator;
+                        tableNameBufferLength += byteLengthWithTerminator;
+                    }
+
+                    if (NeedTags)
+                    {
+                        if (tableEntry.Value.Tags == null || tableEntry.Value.Tags.Length != _tagFields.Length)
+                        {
+                            throw new InvalidOperationException($"Tags for table '{tableName}' are incomplete.");
+                        }
+
+                        var tableTagLength = 0;
+                        for (var tagIndex = 0; tagIndex < _tagFields.Length; tagIndex++)
+                        {
+                            int valueLength;
+                            if (TDengineConstant.IsStmtVarDataType((byte)_tagFields[tagIndex].type))
                             {
-                                switch (tableInfo.Value.Tags[i])
-                                {
-                                    case string strVal:
-                                    {
-                                        bsCount = Encoding.UTF8.GetByteCount(strVal);
-                                        break;
-                                    }
-                                    case byte[] binVal:
-                                    {
-                                        bsCount = binVal.Length;
-                                        break;
-                                    }
-                                    default:
-                                        throw new NotSupportedException(
-                                            $"tag field type not support: {(TDengineDataType)_tagFields[i].type}, value: {tagVal}");
-                                }
+                                valueLength = GetVariableValueLength(tableEntry.Value.Tags[tagIndex], _tagFields[tagIndex],
+                                    "tag");
+                                tableTagLength += 22 + valueLength;
+                            }
+                            else
+                            {
+                                valueLength = TDengineConstant.TypeLengthMap[
+                                    (TDengineDataType)_tagFields[tagIndex].type];
+                                tableTagLength += 18 + valueLength;
+                            }
+                        }
+
+                        tableTagLengths[tableIndex] = tableTagLength;
+                        tagsBufferLength += tableTagLength;
+                    }
+
+                    var rows = tableEntry.Value.Rows;
+                    var tableColumnLength = 0;
+                    for (var columnIndex = 0; columnIndex < colCount; columnIndex++)
+                    {
+                        if (TDengineConstant.IsStmtVarDataType((byte)colFields[columnIndex].type))
+                        {
+                            var valuesLength = 0;
+                            for (var rowIndex = 0; rowIndex < rows; rowIndex++)
+                            {
+                                valuesLength += GetVariableValueLength(
+                                    tableEntry.Value.Cols[columnIndex][rowIndex], colFields[columnIndex], "column");
                             }
 
-                            uint totalLength = 4 + // TotalLength field length
-                                               4 + // DataType field length
-                                               4 + // Num field length
-                                               (uint)1 + // IsNull field length
-                                               1 + // HaveLength field length
-                                               4 + // Length field length, each length is 4 bytes
-                                               4 + // BufferLength field length
-                                               (uint)bsCount; // Buffer field length
-                            tableTagLength += totalLength;
-                            tagsBufferLen += totalLength;
+                            tableColumnLength += 17 + (5 * rows) + valuesLength;
                         }
                         else
                         {
-                            var typeLength = TDengineConstant.TypeLengthMap[(TDengineDataType)_tagFields[i].type];
-                            uint totalLength = 4 + // TotalLength field length
-                                               4 + // DataType field length
-                                               4 + // Num field length
-                                               (uint)1 + // IsNull field length
-                                               1 + // HaveLength field length
-                                               4 + // BufferLength field length
-                                               (uint)typeLength; // Buffer field length
-                            tableTagLength += totalLength;
-                            tagsBufferLen += totalLength;
+                            var typeLength = TDengineConstant.TypeLengthMap[
+                                (TDengineDataType)colFields[columnIndex].type];
+                            tableColumnLength += 17 + rows + (typeLength * rows);
                         }
                     }
 
-                    tableTagLengthList[tmpTableIndex] = tableTagLength;
+                    tableColumnLengths[tableIndex] = tableColumnLength;
+                    columnsBufferLength += tableColumnLength;
+                    tableIndex++;
                 }
 
-                // calculate cols
-                var tableColLength = (uint)0;
-                var rows = tableInfo.Value.Rows;
-                for (int i = 0; i < colCount; i++)
+                var tableNamesLength = tableNameLengthsLength + tableNameBufferLength;
+                var tagsLength = tagsLengthsLength + tagsBufferLength;
+                var columnsLength = columnsLengthsLength + columnsBufferLength;
+                var totalBufferLength = fixedHeaderLength + tableNamesLength + tagsLength + columnsLength;
+                var allocationLength = totalBufferLength + _binaryHeaderLength;
+                if (allocationLength > MaximumBindBinarySize)
                 {
-                    if (TDengineConstant.IsStmtVarDataType((byte)colFields[i].type))
+                    throw new InvalidOperationException(
+                        $"Statement bind payload exceeds the {MaximumBindBinarySize} byte limit.");
+                }
+
+                var tableNamesOffset = fixedHeaderLength;
+                var tagsOffset = tableNamesOffset + tableNamesLength;
+                var columnsOffset = tagsOffset + tagsLength;
+                var buffer = rentFromPool
+                    ? ArrayPool<byte>.Shared.Rent(Math.Max(1, allocationLength))
+                    : new byte[allocationLength];
+                if (rentFromPool)
+                {
+                    Array.Clear(buffer, 0, allocationLength);
+                }
+
+                try
+                {
+                    WriteU32(buffer, _binaryHeaderLength, (uint)totalBufferLength);
+                    WriteU32(buffer, _binaryHeaderLength + 4, (uint)tableCount);
+                    WriteU32(buffer, _binaryHeaderLength + 8, NeedTags ? (uint)_tagFields.Length : 0);
+                    WriteU32(buffer, _binaryHeaderLength + 12, (uint)colCount);
+                    WriteU32(buffer, _binaryHeaderLength + 16, _needTableName ? (uint)fixedHeaderLength : 0);
+                    WriteU32(buffer, _binaryHeaderLength + 20, NeedTags ? (uint)tagsOffset : 0);
+                    WriteU32(buffer, _binaryHeaderLength + 24, (uint)columnsOffset);
+
+                var tableNameLengthOffset = _binaryHeaderLength + tableNamesOffset;
+                var tableNameBufferOffset = tableNameLengthOffset + tableNameLengthsLength;
+                var tagsLengthOffset = _binaryHeaderLength + tagsOffset;
+                var tagsBufferOffset = tagsLengthOffset + tagsLengthsLength;
+                var columnsLengthOffset = _binaryHeaderLength + columnsOffset;
+                var columnsBufferOffset = columnsLengthOffset + columnsLengthsLength;
+
+                for (var i = 0; i < tableTagLengths.Length; i++)
+                {
+                    WriteU32(buffer, tagsLengthOffset + (i * sizeof(uint)), (uint)tableTagLengths[i]);
+                }
+
+                for (var i = 0; i < tableColumnLengths.Length; i++)
+                {
+                    WriteU32(buffer, columnsLengthOffset + (i * sizeof(uint)), (uint)tableColumnLengths[i]);
+                }
+
+                for (var i = 0; i < tableNameLengths.Length; i++)
+                {
+                    WriteU16(buffer, tableNameLengthOffset + (i * sizeof(ushort)), tableNameLengths[i]);
+                }
+
+                var nextTableNameOffset = tableNameBufferOffset;
+                var nextTagOffset = tagsBufferOffset;
+                var nextColumnOffset = columnsBufferOffset;
+                for (var i = 0; i < tableCount; i++)
+                {
+                    var tableName = tableNames[i];
+                    if (_needTableName)
                     {
-                        // variant type
-                        var bsCount = 0;
-                        for (int j = 0; j < rows; j++)
-                        {
-                            var colVal = tableInfo.Value.Cols[i][j];
-                            if (colVal == null || Convert.IsDBNull(colVal))
-                            {
-                                continue;
-                            }
-
-                            switch (tableInfo.Value.Cols[i][j])
-                            {
-                                case string strVal:
-                                {
-                                    bsCount += Encoding.UTF8.GetByteCount(strVal);
-                                    break;
-                                }
-                                case byte[] binVal:
-                                {
-                                    bsCount += binVal.Length;
-                                    break;
-                                }
-                                default:
-                                    throw new NotSupportedException(
-                                        $"col field type not support: {(TDengineDataType)colFields[i].type}, value: {colVal}");
-                            }
-                        }
-
-                        uint totalLength = 4 + // TotalLength field length
-                                           4 + // DataType field length
-                                           4 + // Num field length
-                                           (uint)(1 * rows) + // IsNull field length
-                                           1 + // HaveLength field length
-                                           (uint)(4 * rows) + // Length field length, each length is 4 bytes
-                                           4 + // BufferLength field length
-                                           (uint)bsCount; // Buffer field length
-                        tableColLength += totalLength;
-                        colsBufferLen += totalLength;
+                        StmtUtf8Encoding.GetBytes(tableName, 0, tableName.Length, buffer, nextTableNameOffset);
+                        nextTableNameOffset += tableNameLengths[i];
                     }
-                    else
+
+                    var bindData = _tableInfos[tableName];
+                    if (NeedTags)
                     {
-                        var typeLength = TDengineConstant.TypeLengthMap[(TDengineDataType)colFields[i].type];
-                        uint totalLength = 4 + // TotalLength field length
-                                           4 + // DataType field length
-                                           4 + // Num field length
-                                           (uint)(1 * rows) + // IsNull field length
-                                           1 + // HaveLength field length
-                                           4 + // BufferLength field length
-                                           (uint)(typeLength * rows); // Buffer field length
-                        tableColLength += totalLength;
-                        colsBufferLen += totalLength;
+                        nextTagOffset = WriteBindTag(_tagFields, bindData.Tags, buffer, nextTagOffset);
                     }
+
+                    nextColumnOffset = WriteBindCol(colFields, bindData.Cols, bindData.Rows, buffer,
+                        nextColumnOffset);
                 }
 
-                tableColLengthList[tmpTableIndex] = tableColLength;
-                tmpTableIndex++;
-            }
-
-            // table name
-            if (_needTableName)
-            {
-                tableNameLengthLen = (uint)(tableCount * 2);
-            }
-
-            if (NeedTags)
-            {
-                tagsDataLengthLen = (uint)(tableCount * 4);
-            }
-
-            var tableNameLength = tableNameLengthLen + tableNameBufferLen;
-            var tagsDataLength = tagsDataLengthLen + tagsBufferLen;
-            var colsDataLength = colsDataLengthLen + colsBufferLen;
-            var totalBufferLen = fixedHeaderLen + tableNameLength + tagsDataLength + colsDataLength;
-            var tableNameOffset = fixedHeaderLen;
-            var tagsOffset = tableNameOffset + tableNameLength;
-            var colsOffset = tagsOffset + tagsDataLength;
-            var buffer = new byte[totalBufferLen + _binaryHeaderLength];
-            WriteU32(buffer, _binaryHeaderLength + 0, totalBufferLen); // TotalLength
-            WriteU32(buffer, _binaryHeaderLength + 4, (uint)tableCount); // Count
-            WriteU32(buffer, _binaryHeaderLength + 8, NeedTags ? (uint)_tagFields.Length : 0); // TagCount
-            WriteU32(buffer, _binaryHeaderLength + 12, (uint)colCount); // ColCount
-            WriteU32(buffer, _binaryHeaderLength + 16, _needTableName ? fixedHeaderLen : 0); // TableNamesOffset
-            WriteU32(buffer, _binaryHeaderLength + 20, NeedTags ? tagsOffset : 0); // TagsOffset
-            WriteU32(buffer, _binaryHeaderLength + 24, colsOffset); // ColsOffset
-            var tableNameLengthOffset = _binaryHeaderLength + (int)tableNameOffset;
-            var tableNameBufferOffset = tableNameLengthOffset + (int)tableNameLengthLen;
-            var tagsLengthOffset = _binaryHeaderLength + (int)tagsOffset;
-            var tagsBufferOffset = tagsLengthOffset + (int)tagsDataLengthLen;
-            var colsLengthOffset = _binaryHeaderLength + (int)colsOffset;
-            var colsBufferOffset = colsLengthOffset + (int)colsDataLengthLen;
-            if (NeedTags)
-            {
-                // tags length
-                Buffer.BlockCopy(tableTagLengthList, 0, buffer, tagsLengthOffset, (int)tagsDataLengthLen);
-            }
-
-            // cols length
-            Buffer.BlockCopy(tableColLengthList, 0, buffer, colsLengthOffset, (int)colsDataLengthLen);
-
-            if (_needTableName)
-            {
-                Buffer.BlockCopy(utf8TableNameLen, 0, buffer, tableNameLengthOffset,
-                    (int)tableNameLengthLen);
-            }
-
-            var tmpTableNameOffset = tableNameBufferOffset;
-
-            var tagOffset = tagsBufferOffset;
-            var colOffset = colsBufferOffset;
-            for (int tableIndex = 0; tableIndex < tableCount; tableIndex++)
-            {
-                var tableName = tableNames[tableIndex];
-                if (_needTableName)
+                if (nextTableNameOffset != tableNameBufferOffset + tableNameBufferLength ||
+                    nextTagOffset != tagsBufferOffset + tagsBufferLength ||
+                    nextColumnOffset != columnsBufferOffset + columnsBufferLength)
                 {
-                    // write table name
-                    Encoding.UTF8.GetBytes(tableName, 0, tableName.Length, buffer, tmpTableNameOffset);
-                    tmpTableNameOffset += utf8TableNameLen[tableIndex];
+                    throw new InvalidOperationException("Statement bind payload length calculation is inconsistent.");
                 }
 
-                var bindData = _tableInfos[tableName];
-                // write tags
-                if (NeedTags)
+                    bufferLength = allocationLength;
+                    return buffer;
+                }
+                catch
                 {
-                    // tags data
-                    tagOffset = WriteBindTag(_tagFields, bindData.Tags, buffer, tagOffset);
-                }
+                    if (rentFromPool)
+                    {
+                        ClearAndReturnPooledBindBinary(buffer, allocationLength);
+                    }
 
-                // write cols
-                colOffset = WriteBindCol(colFields, bindData.Cols, bindData.Rows, buffer, colOffset);
+                    throw;
+                }
+            }
+        }
+
+        private static int GetVariableValueLength(object value, TaosFieldE field, string valueKind)
+        {
+            if (value == null || Convert.IsDBNull(value))
+            {
+                return 0;
             }
 
-            return buffer;
+            if (value is string stringValue)
+            {
+                return StmtUtf8Encoding.GetByteCount(stringValue);
+            }
+
+            if (value is byte[] bytes)
+            {
+                return bytes.Length;
+            }
+
+            throw new NotSupportedException(
+                $"{valueKind} field type not support: {(TDengineDataType)field.type}, value: {value}");
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -689,16 +678,57 @@ namespace TDengine.Driver.Client
 #endif
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static uint SingleToUInt32Bits(float value)
+        {
+#if NETSTANDARD2_1_OR_GREATER || NET5_0_OR_GREATER || NETCOREAPP2_0_OR_GREATER
+            return (uint)BitConverter.SingleToInt32Bits(value);
+#else
+            return (uint)new Int32SingleUnion { Single = value }.Int32;
+#endif
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void CopyBytes(byte[] source, byte[] destination, int destinationOffset)
+        {
+#if NETSTANDARD2_1_OR_GREATER || NET5_0_OR_GREATER || NETCOREAPP2_1_OR_GREATER
+            source.AsSpan().CopyTo(destination.AsSpan(destinationOffset, source.Length));
+#else
+            Buffer.BlockCopy(source, 0, destination, destinationOffset, source.Length);
+#endif
+        }
+
         protected abstract void BindBinaryInternal(byte[] data, out int affectedRows);
 
-        protected byte[] GenerateBindBinaryForExecution()
+        protected byte[] RentBindBinaryForExecution(out int bufferLength)
         {
             if (!_addBatched)
             {
                 throw new InvalidOperationException("No batch added. Call AddBatch() before Exec().");
             }
 
-            return GenerateBindBinary();
+            return GenerateBindBinary(true, out bufferLength);
+        }
+
+        protected static void ReturnPooledBindBinary(byte[] buffer, int bufferLength)
+        {
+            ClearAndReturnPooledBindBinary(buffer, bufferLength);
+        }
+
+        private static void ClearAndReturnPooledBindBinary(byte[] buffer, int bufferLength)
+        {
+            if (buffer == null)
+            {
+                return;
+            }
+
+            var clearLength = Math.Max(0, Math.Min(bufferLength, buffer.Length));
+            if (clearLength != 0)
+            {
+                Array.Clear(buffer, 0, clearLength);
+            }
+
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
         }
 
         protected void CompleteExecution(int affectedRows)

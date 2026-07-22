@@ -9,12 +9,15 @@ namespace TDengine.Driver.Client.Websocket
             int idleConnections,
             int totalConnections,
             int threadsAwaitingConnection,
+            int maintenanceConnections,
             long acquireCount,
             long acquireTimeoutCount,
             long creationCount,
             long creationFailureCount,
             long disposedConnectionCount,
             long recycledConnectionCount,
+            long keepaliveCount,
+            long keepaliveFailureCount,
             TimeSpan averageAcquireDuration,
             TimeSpan maxAcquireDuration)
         {
@@ -22,12 +25,15 @@ namespace TDengine.Driver.Client.Websocket
             IdleConnections = idleConnections;
             TotalConnections = totalConnections;
             ThreadsAwaitingConnection = threadsAwaitingConnection;
+            MaintenanceConnections = maintenanceConnections;
             AcquireCount = acquireCount;
             AcquireTimeoutCount = acquireTimeoutCount;
             CreationCount = creationCount;
             CreationFailureCount = creationFailureCount;
             DisposedConnectionCount = disposedConnectionCount;
             RecycledConnectionCount = recycledConnectionCount;
+            KeepaliveCount = keepaliveCount;
+            KeepaliveFailureCount = keepaliveFailureCount;
             AverageAcquireDuration = averageAcquireDuration;
             MaxAcquireDuration = maxAcquireDuration;
         }
@@ -40,6 +46,8 @@ namespace TDengine.Driver.Client.Websocket
 
         public int ThreadsAwaitingConnection { get; }
 
+        public int MaintenanceConnections { get; }
+
         public long AcquireCount { get; }
 
         public long AcquireTimeoutCount { get; }
@@ -51,6 +59,10 @@ namespace TDengine.Driver.Client.Websocket
         public long DisposedConnectionCount { get; }
 
         public long RecycledConnectionCount { get; }
+
+        public long KeepaliveCount { get; }
+
+        public long KeepaliveFailureCount { get; }
 
         public TimeSpan AverageAcquireDuration { get; }
 

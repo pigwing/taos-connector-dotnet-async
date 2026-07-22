@@ -4,13 +4,13 @@ namespace TDengine.Driver.Client
 {
     public abstract partial class AbstractStmt
     {
-        public long Affected()
+        public virtual long Affected()
         {
             ThrowIfDisposed();
             return _affectedRows;
         }
 
-        public IRows Result()
+        public virtual IRows Result()
         {
             ThrowIfDisposed();
             CheckExecuted();

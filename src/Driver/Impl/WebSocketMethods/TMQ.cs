@@ -16,7 +16,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         internal TMQConnection(TMQOptions options, FailoverAddress address, TimeSpan connectTimeout = default,
             TimeSpan readTimeout = default, TimeSpan writeTimeout = default) : base(
             GetUrl(options, address), connectTimeout, readTimeout,
-            writeTimeout, options.TDEnableCompression == "true")
+            writeTimeout, string.Equals(options.TDEnableCompression, "true", StringComparison.OrdinalIgnoreCase))
         {
         }
 
@@ -46,7 +46,8 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         {
             var schema = "ws";
             var port = endpointPort;
-            if (options.TDUseSSL == "true")
+            var useSsl = string.Equals(options.TDUseSSL, "true", StringComparison.OrdinalIgnoreCase);
+            if (useSsl)
             {
                 schema = "wss";
                 if (port <= 0)
@@ -81,7 +82,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
             if (!string.IsNullOrEmpty(token))
             {
-                uriBuilder.Query = $"token={token}";
+                uriBuilder.Query = "token=" + Uri.EscapeDataString(token);
             }
 
             return uriBuilder.ToString();
@@ -89,10 +90,21 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
         public WSTMQSubscribeResp Subscribe(List<string> topics, TMQOptions options)
         {
-            return Subscribe(_GetReqId(), topics, options);
+            return Subscribe(_GetReqId(), topics, options, false);
+        }
+
+        public WSTMQSubscribeResp Subscribe(List<string> topics, TMQOptions options, bool listInstances)
+        {
+            return Subscribe(_GetReqId(), topics, options, listInstances);
         }
 
         public WSTMQSubscribeResp Subscribe(ulong reqId, List<string> topics, TMQOptions options)
+        {
+            return Subscribe(reqId, topics, options, false);
+        }
+
+        public WSTMQSubscribeResp Subscribe(ulong reqId, List<string> topics, TMQOptions options,
+            bool listInstances)
         {
             return SendJsonBackJson<WSTMQSubscribeReq, WSTMQSubscribeResp>(WSTMQAction.TMQSubscribe,
                 new WSTMQSubscribeReq
@@ -110,7 +122,8 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     WithTableName = options.MsgWithTableName,
                     SessionTimeoutMs = options.SessionTimeoutMs,
                     MaxPollIntervalMs = options.MaxPollIntervalMs,
-                    Config = options.GetOtherProperties()
+                    Config = options.GetOtherProperties(),
+                    ListInstances = listInstances ? true : (bool?)null
                 }, reqId);
         }
 
@@ -320,8 +333,11 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         
         public string ConnectionTimezone => Get("connectionTimezone");
 
+        public string TDAdapterHA => Get("ws.adapterHA");
+
         public TMQOptions(IEnumerable<KeyValuePair<string, string>> config)
         {
+            if (config == null) throw new ArgumentNullException(nameof(config));
             this.properties = new Dictionary<string, string>();
 
             foreach (var kv in config)
@@ -345,11 +361,11 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             var endpoints = new List<FailoverAddress>();
             var deduplicatedCacheKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var hostValue = TDConnectIp ?? string.Empty;
-            var hostSegments = hostValue.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var hostSegments = hostValue.Split(new[] { ',' }, StringSplitOptions.None);
 
-            if (hostSegments.Length == 0)
+            if (hostSegments.Length == 0 || Array.Exists(hostSegments, string.IsNullOrWhiteSpace))
             {
-                throw new ArgumentException("invalid td.connect.ip value", TdConnectIpKey);
+                throw new ArgumentException("td.connect.ip contains an empty endpoint", TdConnectIpKey);
             }
 
             var isMultiHost = hostSegments.Length > 1;
@@ -359,7 +375,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     out var endpointPort, "td.connect.ip", allowBareIpv6: !isMultiHost);
                 var resolvedPort = ResolvePort(endpointPort);
                 var cacheKey = HostEndpointParser.BuildFailoverCacheKey(TDengineConstant.ProtocolWebSocket,
-                    TDUseSSL == "true", endpointHost, resolvedPort);
+                    string.Equals(TDUseSSL, "true", StringComparison.OrdinalIgnoreCase), endpointHost, resolvedPort);
                 if (!deduplicatedCacheKeys.Add(cacheKey))
                 {
                     continue;
@@ -398,7 +414,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 return port;
             }
 
-            return TDUseSSL == "true" ? 443 : 6041;
+            return string.Equals(TDUseSSL, "true", StringComparison.OrdinalIgnoreCase) ? 443 : 6041;
         }
 
         private Dictionary<string, bool> knownProperties = new Dictionary<string, bool>()
@@ -421,6 +437,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             { "ws.autoReconnect", true },
             { "ws.reconnect.retry.count", true },
             { "ws.reconnect.interval.ms", true },
+            { "ws.adapterHA", true },
             { "session.timeout.ms", true },
             { "max.poll.interval.ms", true },
             { "connectionTimezone", true },

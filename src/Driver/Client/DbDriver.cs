@@ -36,8 +36,28 @@ namespace TDengine.Driver.Client
                 }
 
                 var client = new WSClientAsync(builder);
-                await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
-                return client;
+                try
+                {
+                    await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
+                    return client;
+                }
+                catch
+                {
+                    try
+                    {
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
+                        await client.DisposeAsync().ConfigureAwait(false);
+#else
+                        client.Dispose();
+#endif
+                    }
+                    catch
+                    {
+                        // Preserve the connection failure; the client is already unusable.
+                    }
+
+                    throw;
+                }
             }
 
             throw new NotImplementedException("Native async is not implemented");

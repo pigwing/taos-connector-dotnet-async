@@ -875,7 +875,8 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
                 Precision = (int)TDenginePrecision.TSDB_TIME_PRECISION_MILLI
             };
 
-            using (var rows = new WSRowsAsync(1, result, null, TimeZoneInfo.Utc))
+            using (var rows = new WSRowsAsync(1, result, WSRowsAsync.TestFetchRawBlockAccessor.Instance,
+                       (_, _) => Task.FromResult(Array.Empty<byte>()), TimeZoneInfo.Utc))
             {
                 Assert.Equal(18, rows.GetFieldPrecision(0));
                 Assert.Equal(6, rows.GetFieldScale(0));
@@ -983,6 +984,7 @@ jvm_gc_pause_seconds_max,action=end\ of\ minor\ GC,cause=Allocation\ Failure,hos
             WriteUInt16(bytes, 16, 1);
             WriteUInt32(bytes, 34, 0);
             WriteUInt32(bytes, 38, 0);
+            WriteUInt64(bytes, 42, 1);
             bytes[50] = 0;
             WriteUInt32(bytes, 51, rawBlockLength);
             WriteUInt32(bytes, rawBlockOffset + 0, 1);

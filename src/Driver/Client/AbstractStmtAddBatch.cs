@@ -4,7 +4,7 @@ namespace TDengine.Driver.Client
 {
     public abstract partial class AbstractStmt
     {
-        public void AddBatch()
+        public virtual void AddBatch()
         {
             // check if the statement is prepared
             CheckPrepared();
@@ -18,6 +18,12 @@ namespace TDengine.Driver.Client
             if (NeedTags && !IsTagsSet)
             {
                 throw new InvalidOperationException("Tags must be set before adding a batch.");
+            }
+
+            if (_currentTableInfo == null || _currentTableInfo.Cols == null ||
+                _currentTableInfo.Cols.Length == 0)
+            {
+                throw new InvalidOperationException("This statement has no bindable columns.");
             }
 
             // check if columns are set
@@ -52,10 +58,14 @@ namespace TDengine.Driver.Client
 
         private void AddCurrentTableInfoToBatch()
         {
-            if (_isInsert && !_needTableName &&
-                _tableInfos.TryGetValue(_currentTableInfo.TableName, out var existingTableInfo) &&
-                !ReferenceEquals(existingTableInfo, _currentTableInfo))
+            if (_tableInfos.TryGetValue(_currentTableInfo.TableName, out var existingTableInfo))
             {
+                if (NeedTags && !TagsEqual(existingTableInfo.Tags, _currentTableInfo.Tags))
+                {
+                    throw new InvalidOperationException(
+                        $"Tags for table '{_currentTableInfo.TableName}' do not match the previous batch.");
+                }
+
                 AppendRows(existingTableInfo, _currentTableInfo);
                 PutTableInfo(_currentTableInfo);
                 return;
@@ -75,6 +85,70 @@ namespace TDengine.Driver.Client
             {
                 target.Cols[i].AddRange(source.Cols[i]);
             }
+        }
+
+        private static bool TagsEqual(object[] left, object[] right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return true;
+            }
+
+            if (left == null || right == null || left.Length != right.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < left.Length; i++)
+            {
+                var leftValue = left[i];
+                var rightValue = right[i];
+                if ((leftValue == null || Convert.IsDBNull(leftValue)) &&
+                    (rightValue == null || Convert.IsDBNull(rightValue)))
+                {
+                    continue;
+                }
+
+                if (leftValue is byte[] leftBytes && rightValue is byte[] rightBytes)
+                {
+                    if (!ByteArraysEqual(leftBytes, rightBytes))
+                    {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                if (!Equals(leftValue, rightValue))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool ByteArraysEqual(byte[] left, byte[] right)
+        {
+            if (ReferenceEquals(left, right))
+            {
+                return true;
+            }
+
+            if (left == null || right == null || left.Length != right.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < left.Length; i++)
+            {
+                if (left[i] != right[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
     }
 }

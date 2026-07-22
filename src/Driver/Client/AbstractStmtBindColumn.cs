@@ -185,7 +185,7 @@ namespace TDengine.Driver.Client
             return array;
         }
 
-        public void BindColumn(TaosFieldE[] _, params Array[] arrays)
+        public virtual void BindColumn(TaosFieldE[] _, params Array[] arrays)
         {
             CheckPrepared();
             CheckTableNameSet();
@@ -199,6 +199,26 @@ namespace TDengine.Driver.Client
                 {
                     throw new ArgumentException(
                         $"Expected {_colFields.Length} columns, but got {arrays.Length}");
+                }
+
+                for (var i = 0; i < arrays.Length; i++)
+                {
+                    if (arrays[i] == null)
+                    {
+                        throw new ArgumentNullException(nameof(arrays), $"Bind column array at index {i} is null.");
+                    }
+
+                    if (arrays[i].Rank != 1)
+                    {
+                        throw new ArgumentException(
+                            $"Bind column array at index {i} must be one-dimensional.", nameof(arrays));
+                    }
+
+                    if (arrays[i].GetLowerBound(0) != 0)
+                    {
+                        throw new ArgumentException(
+                            $"Bind column array at index {i} must have a zero lower bound.", nameof(arrays));
+                    }
                 }
 
                 var rowCount = arrays[0].Length;
@@ -222,7 +242,7 @@ namespace TDengine.Driver.Client
                 {
                     for (var j = 0; j < localArrays[i].Length; j++)
                     {
-                        _currentTableInfo.Cols[i].Add(localArrays[i].GetValue(j));
+                        _currentTableInfo.Cols[i].Add(SnapshotBindValue(localArrays[i].GetValue(j)));
                     }
                 }
 

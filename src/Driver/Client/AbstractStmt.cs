@@ -14,8 +14,8 @@ namespace TDengine.Driver.Client
             Cols = cols;
         }
 
-        public bool IsColSet => Cols[0].Count > 0;
-        public int Rows => Cols[0].Count;
+        public bool IsColSet => Cols != null && Cols.Length > 0 && Cols[0] != null && Cols[0].Count > 0;
+        public int Rows => IsColSet ? Cols[0].Count : 0;
     }
     
     public abstract partial class AbstractStmt : IStmt
@@ -48,6 +48,8 @@ namespace TDengine.Driver.Client
         private const int MaxCachedObjectLists = 256;
         private const int MaxCachedTableInfos = 64;
         private const int MaxCachedObjectListCapacity = 4096;
+        private const int MaxCachedObjectListTotalCapacity = 65536;
+        private int _cachedObjectListCapacity;
         
         // after prepare or add batch, get a new table info
         private Stmt2TableData GetStmt2TableData()
@@ -77,7 +79,14 @@ namespace TDengine.Driver.Client
 
         private List<object> GetObjectList()
         {
-            return _objectListQueue.Count > 0 ? _objectListQueue.Dequeue() : new List<object>();
+            if (_objectListQueue.Count == 0)
+            {
+                return new List<object>();
+            }
+
+            var list = _objectListQueue.Dequeue();
+            _cachedObjectListCapacity -= list.Capacity;
+            return list;
         }
         
         // after execute, put table info to cache
@@ -95,9 +104,11 @@ namespace TDengine.Driver.Client
 
                 list.Clear();
                 if (list.Capacity <= MaxCachedObjectListCapacity &&
-                    _objectListQueue.Count < MaxCachedObjectLists)
+                    _objectListQueue.Count < MaxCachedObjectLists &&
+                    list.Capacity <= MaxCachedObjectListTotalCapacity - _cachedObjectListCapacity)
                 {
                     _objectListQueue.Enqueue(list);
+                    _cachedObjectListCapacity += list.Capacity;
                 }
                 info.Cols[i] = null;
             }
@@ -128,13 +139,17 @@ namespace TDengine.Driver.Client
             _tableInfos.Clear();
             _isTableNameSet = false;
             _isTagsSet = false;
+            _isColSet = false;
             _addBatched = false;
             _executed = false;
+            _affectedRows = 0;
             _schemaChanged = false;
+            _queryFields = null;
             _currentTableInfo = null;
             // clean cached object lists and table info queue
             _tableInfoQueue.Clear();
             _objectListQueue.Clear();
+            _cachedObjectListCapacity = 0;
         }
 
         // after add batch, clean current batch info

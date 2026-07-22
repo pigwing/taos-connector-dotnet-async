@@ -26,7 +26,11 @@ public interface IStmtAsync : IAsyncDisposable, IDisposable
 
         Task<TaosFieldE[]> GetTagFieldsAsync();
 
+        Task<TaosFieldE[]> GetTagFieldsAsync(CancellationToken cancellationToken);
+
         Task<TaosFieldE[]> GetColFieldsAsync();
+
+        Task<TaosFieldE[]> GetColFieldsAsync(CancellationToken cancellationToken);
 
         Task BindRowAsync(object[] row);
 

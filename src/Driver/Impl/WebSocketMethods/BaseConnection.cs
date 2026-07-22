@@ -95,6 +95,10 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 writeTimeout = _defaultWriteTimeout;
             }
 
+            TimeoutHelper.ValidateTimerTimeout(connectTimeout, nameof(connectTimeout), true);
+            TimeoutHelper.ValidateTimerTimeout(readTimeout, nameof(readTimeout), true);
+            TimeoutHelper.ValidateTimerTimeout(writeTimeout, nameof(writeTimeout), true);
+
             var connTimeout = connectTimeout;
             _readTimeout = readTimeout;
             _writeTimeout = writeTimeout;
@@ -215,7 +219,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     "receive unexpected message", e.Message);
             }
 
-            throw new TDengineError(resp.Code, resp.Message, request, Encoding.UTF8.GetString(respBytes));
+            throw new TDengineError(resp.Code, resp.Message);
         }
 
         private async Task WaitForResponseWithTimeout(ulong reqId, TaskCompletionSource<WsMessage> tcs)
@@ -389,10 +393,10 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             catch (Exception)
             {
                 throw new TDengineError((int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
-                    "receive unexpected message", "req:" + reqStr + ";resp:" + Encoding.UTF8.GetString(respBytes));
+                    "receive unexpected message");
             }
 
-            throw new TDengineError(resp.Code, resp.Message, Encoding.UTF8.GetString(respBytes));
+            throw new TDengineError(resp.Code, resp.Message);
         }
 
         protected string SendJson<T>(string action, T req, ulong reqId)

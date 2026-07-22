@@ -28,6 +28,7 @@ namespace TDengine.Driver
         private const string ReconnectIntervalMsKey = "reconnectIntervalMs";
         private const string ConnectionTimezoneKey = "connectionTimezone";
         private const string BearerTokenKey = "bearerToken";
+        private const string AdapterHAKey = "adapterHA";
         private const string PoolingKey = "pooling";
         private const string MinPoolSizeKey = "minPoolSize";
         private const string MaxPoolSizeKey = "maxPoolSize";
@@ -60,6 +61,7 @@ namespace TDengine.Driver
             ReconnectIntervalMs,
             ConnectionTimezone,
             BearerToken,
+            AdapterHA,
             Pooling,
             MinPoolSize,
             MaxPoolSize,
@@ -80,6 +82,7 @@ namespace TDengine.Driver
         private string _password = string.Empty;
         private string _protocol = TDengineConstant.ProtocolNative;
         private TimeZoneInfo _timezone = TimeZoneInfo.Local;
+        private bool _timezoneExplicit;
         private TimeSpan _connTimeout = TimeSpan.Zero;
         private TimeSpan _readTimeout = TimeSpan.Zero;
         private TimeSpan _writeTimeout = TimeSpan.Zero;
@@ -91,6 +94,7 @@ namespace TDengine.Driver
         private int _reconnectIntervalMs = 2000;
         private TimeZoneInfo _connectionTimezone = null;
         private string _bearerToken = string.Empty;
+        private bool _adapterHA = false;
         private bool _pooling = false;
         private int _minPoolSize = 0;
         private int _maxPoolSize = 10;
@@ -126,6 +130,7 @@ namespace TDengine.Driver
             list[(int)KeysEnum.ReconnectIntervalMs] = ReconnectIntervalMsKey;
             list[(int)KeysEnum.ConnectionTimezone] = ConnectionTimezoneKey;
             list[(int)KeysEnum.BearerToken] = BearerTokenKey;
+            list[(int)KeysEnum.AdapterHA] = AdapterHAKey;
             list[(int)KeysEnum.Pooling] = PoolingKey;
             list[(int)KeysEnum.MinPoolSize] = MinPoolSizeKey;
             list[(int)KeysEnum.MaxPoolSize] = MaxPoolSizeKey;
@@ -158,6 +163,7 @@ namespace TDengine.Driver
                 [ReconnectIntervalMsKey] = KeysEnum.ReconnectIntervalMs,
                 [ConnectionTimezoneKey] = KeysEnum.ConnectionTimezone,
                 [BearerTokenKey] = KeysEnum.BearerToken,
+                [AdapterHAKey] = KeysEnum.AdapterHA,
                 [PoolingKey] = KeysEnum.Pooling,
                 [MinPoolSizeKey] = KeysEnum.MinPoolSize,
                 ["min pool size"] = KeysEnum.MinPoolSize,
@@ -189,128 +195,49 @@ namespace TDengine.Driver
         public ConnectionStringBuilder(string connectionString)
         {
             ConnectionString = connectionString;
-            if (!string.IsNullOrWhiteSpace(connectionString))
+            ValidatePoolSizes();
+        }
+
+        public new string ConnectionString
+        {
+            get => base.ConnectionString;
+            set
             {
-                string[] queries = connectionString.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-                // timezone and connectionTimezone can not be set in connection string
-                bool hasTimezone = false;
-                bool hasConnectionTimezone = false;
-                foreach (string query in queries)
+                base.ConnectionString = value;
+                ValidatePoolSizes();
+            }
+        }
+
+        public override object this[string keyword]
+        {
+            get
+            {
+                if (!KeysDict.TryGetValue(keyword, out var index))
                 {
-                    string[] keyValue = query.Split(new char[] { '=' }, 2);
-                    if (keyValue.Length != 2)
-                    {
-                        throw new ArgumentException($"invalid connection param {query}");
-                    }
-
-                    var keyword = keyValue[0].Trim();
-                    var value = keyValue[1].Trim();
-                    KeysEnum index;
-                    var exist = KeysDict.TryGetValue(keyword, out index);
-                    if (exist)
-                    {
-                        switch (index)
-                        {
-                            case KeysEnum.Host:
-                                Host = value;
-                                break;
-                            case KeysEnum.Port:
-                                Port = Convert.ToInt32(value);
-                                break;
-                            case KeysEnum.Database:
-                                Database = value;
-                                break;
-                            case KeysEnum.Username:
-                                Username = value;
-                                break;
-                            case KeysEnum.Password:
-                                Password = value;
-                                break;
-                            case KeysEnum.Protocol:
-                                Protocol = value;
-                                break;
-                            case KeysEnum.Timezone:
-                                Timezone = TimeZoneInfo.FindSystemTimeZoneById(value);
-                                hasTimezone = true;
-                                break;
-                            case KeysEnum.ConnTimeout:
-                                ConnTimeout = TimeSpan.Parse(value);
-                                break;
-                            case KeysEnum.ReadTimeout:
-                                ReadTimeout = TimeSpan.Parse(value);
-                                break;
-                            case KeysEnum.WriteTimeout:
-                                WriteTimeout = TimeSpan.Parse(value);
-                                break;
-                            case KeysEnum.Token:
-                                Token = value;
-                                break;
-                            case KeysEnum.UseSSL:
-                                UseSSL = Convert.ToBoolean(value);
-                                break;
-                            case KeysEnum.EnableCompression:
-                                EnableCompression = Convert.ToBoolean(value);
-                                break;
-                            case KeysEnum.AutoReconnect:
-                                AutoReconnect = Convert.ToBoolean(value);
-                                break;
-                            case KeysEnum.ReconnectRetryCount:
-                                ReconnectRetryCount = Convert.ToInt32(value);
-                                break;
-                            case KeysEnum.ReconnectIntervalMs:
-                                ReconnectIntervalMs = Convert.ToInt32(value);
-                                break;
-                            case KeysEnum.ConnectionTimezone:
-                                ConnectionTimezone = TimeZoneInfo.FindSystemTimeZoneById(value);
-                                hasConnectionTimezone = true;
-                                break;
-                            case KeysEnum.BearerToken:
-                                BearerToken = value;
-                                break;
-                            case KeysEnum.Pooling:
-                                Pooling = Convert.ToBoolean(value);
-                                break;
-                            case KeysEnum.MinPoolSize:
-                                MinPoolSize = Convert.ToInt32(value);
-                                break;
-                            case KeysEnum.MaxPoolSize:
-                                MaxPoolSize = Convert.ToInt32(value);
-                                break;
-                            case KeysEnum.PoolConnectionTimeout:
-                                PoolConnectionTimeout = ParsePoolTimeSpan(value, PoolConnectionTimeoutKey);
-                                break;
-                            case KeysEnum.PoolKeepaliveTime:
-                                PoolKeepaliveTime = ParsePoolTimeSpan(value, PoolKeepaliveTimeKey);
-                                break;
-                            case KeysEnum.PoolMaxLifetime:
-                                PoolMaxLifetime = ParsePoolTimeSpan(value, PoolMaxLifetimeKey);
-                                break;
-                            case KeysEnum.PoolHousekeepingInterval:
-                                PoolHousekeepingInterval = ParsePoolTimeSpan(value, PoolHousekeepingIntervalKey);
-                                break;
-                            case KeysEnum.PoolCreationRetryBackoff:
-                                PoolCreationRetryBackoff = ParsePoolTimeSpan(value, PoolCreationRetryBackoffKey);
-                                break;
-                            case KeysEnum.PoolMaxCreationRetryBackoff:
-                                PoolMaxCreationRetryBackoff = ParsePoolTimeSpan(value, PoolMaxCreationRetryBackoffKey);
-                                break;
-                            case KeysEnum.PoolLeakDetectionThreshold:
-                                PoolLeakDetectionThreshold = ParsePoolTimeSpan(value, PoolLeakDetectionThresholdKey);
-                                break;
-                            default:
-                                throw new ArgumentOutOfRangeException(nameof(index), index, "get value error");
-                        }
-
-                        var canonicalKeyword = KeysList[(int)index];
-                        if (!string.Equals(keyword, canonicalKeyword, StringComparison.OrdinalIgnoreCase))
-                        {
-                            base.Remove(keyword);
-                        }
-                    }
+                    return base[keyword];
                 }
-                if (hasConnectionTimezone && hasTimezone)
+
+                return GetAt(index);
+            }
+            set
+            {
+                if (!KeysDict.TryGetValue(keyword, out var index))
                 {
-                    throw new ArgumentException("connectionTimezone and timezone can not be set at the same time");
+                    base[keyword] = value;
+                    return;
+                }
+
+                if (value == null)
+                {
+                    Remove(keyword);
+                    return;
+                }
+
+                SetAt(index, value);
+                var canonicalKeyword = KeysList[(int)index];
+                if (!string.Equals(keyword, canonicalKeyword, StringComparison.OrdinalIgnoreCase))
+                {
+                    base.Remove(keyword);
                 }
             }
         }
@@ -370,8 +297,20 @@ namespace TDengine.Driver
             get => _timezone;
             set
             {
+                if (value == null)
+                {
+                    throw new ArgumentNullException(nameof(value));
+                }
+
+                if (_connectionTimezone != null)
+                {
+                    throw new ArgumentException("connectionTimezone and timezone can not be set at the same time",
+                        TimezoneKey);
+                }
+
                 base[TimezoneKey] = value.Id;
                 _timezone = value;
+                _timezoneExplicit = true;
             }
         }
 
@@ -380,7 +319,8 @@ namespace TDengine.Driver
             get => _connTimeout;
             set
             {
-                base[ConnTimeoutKey] = value.ToString();
+                ValidateNetworkTimeout(value, ConnTimeoutKey);
+                base[ConnTimeoutKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _connTimeout = value;
             }
         }
@@ -390,7 +330,8 @@ namespace TDengine.Driver
             get => _readTimeout;
             set
             {
-                base[ReadTimeoutKey] = value.ToString();
+                ValidateNetworkTimeout(value, ReadTimeoutKey);
+                base[ReadTimeoutKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _readTimeout = value;
             }
         }
@@ -400,7 +341,8 @@ namespace TDengine.Driver
             get => _writeTimeout;
             set
             {
-                base[WriteTimeoutKey] = value.ToString();
+                ValidateNetworkTimeout(value, WriteTimeoutKey);
+                base[WriteTimeoutKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _writeTimeout = value;
             }
         }
@@ -456,7 +398,20 @@ namespace TDengine.Driver
             get => _connectionTimezone;
             set
             {
+                if (value == null)
+                {
+                    base.Remove(ConnectionTimezoneKey);
+                    _connectionTimezone = null;
+                    return;
+                }
+
 #if NET6_0_OR_GREATER
+                if (_timezoneExplicit)
+                {
+                    throw new ArgumentException("connectionTimezone and timezone can not be set at the same time",
+                        ConnectionTimezoneKey);
+                }
+
                 if (!value.HasIanaId)
                     throw new ArgumentException("invalid connection timezone value, only support IANA ID", ConnectionTimezoneKey);
                 base[ConnectionTimezoneKey] = value.Id;
@@ -472,6 +427,12 @@ namespace TDengine.Driver
         {
             get => _bearerToken;
             set => base[BearerTokenKey] = _bearerToken = value;
+        }
+
+        public bool AdapterHA
+        {
+            get => _adapterHA;
+            set => base[AdapterHAKey] = _adapterHA = value;
         }
 
         public bool Pooling
@@ -513,12 +474,12 @@ namespace TDengine.Driver
             get => _poolConnectionTimeout;
             set
             {
-                if (value <= TimeSpan.Zero)
+                if (!TimeoutHelper.IsSupportedTimerTimeout(value, false))
                 {
                     throw new ArgumentException("invalid pool connection timeout value", PoolConnectionTimeoutKey);
                 }
 
-                base[PoolConnectionTimeoutKey] = value.ToString();
+                base[PoolConnectionTimeoutKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _poolConnectionTimeout = value;
             }
         }
@@ -528,12 +489,12 @@ namespace TDengine.Driver
             get => _poolKeepaliveTime;
             set
             {
-                if (value < TimeSpan.Zero)
+                if (!TimeoutHelper.IsSupportedTimerTimeout(value, true))
                 {
                     throw new ArgumentException("invalid pool keepalive time value", PoolKeepaliveTimeKey);
                 }
 
-                base[PoolKeepaliveTimeKey] = value.ToString();
+                base[PoolKeepaliveTimeKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _poolKeepaliveTime = value;
             }
         }
@@ -543,12 +504,12 @@ namespace TDengine.Driver
             get => _poolMaxLifetime;
             set
             {
-                if (value < TimeSpan.Zero)
+                if (!TimeoutHelper.IsSupportedTimerTimeout(value, true))
                 {
                     throw new ArgumentException("invalid pool max lifetime value", PoolMaxLifetimeKey);
                 }
 
-                base[PoolMaxLifetimeKey] = value.ToString();
+                base[PoolMaxLifetimeKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _poolMaxLifetime = value;
             }
         }
@@ -558,13 +519,13 @@ namespace TDengine.Driver
             get => _poolHousekeepingInterval;
             set
             {
-                if (value <= TimeSpan.Zero)
+                if (!TimeoutHelper.IsSupportedTimerTimeout(value, false))
                 {
                     throw new ArgumentException("invalid pool housekeeping interval value",
                         PoolHousekeepingIntervalKey);
                 }
 
-                base[PoolHousekeepingIntervalKey] = value.ToString();
+                base[PoolHousekeepingIntervalKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _poolHousekeepingInterval = value;
             }
         }
@@ -574,13 +535,13 @@ namespace TDengine.Driver
             get => _poolCreationRetryBackoff;
             set
             {
-                if (value < TimeSpan.Zero)
+                if (!TimeoutHelper.IsSupportedTimerTimeout(value, true))
                 {
                     throw new ArgumentException("invalid pool creation retry backoff value",
                         PoolCreationRetryBackoffKey);
                 }
 
-                base[PoolCreationRetryBackoffKey] = value.ToString();
+                base[PoolCreationRetryBackoffKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _poolCreationRetryBackoff = value;
             }
         }
@@ -590,13 +551,13 @@ namespace TDengine.Driver
             get => _poolMaxCreationRetryBackoff;
             set
             {
-                if (value < TimeSpan.Zero)
+                if (!TimeoutHelper.IsSupportedTimerTimeout(value, true))
                 {
                     throw new ArgumentException("invalid pool max creation retry backoff value",
                         PoolMaxCreationRetryBackoffKey);
                 }
 
-                base[PoolMaxCreationRetryBackoffKey] = value.ToString();
+                base[PoolMaxCreationRetryBackoffKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _poolMaxCreationRetryBackoff = value;
             }
         }
@@ -606,31 +567,164 @@ namespace TDengine.Driver
             get => _poolLeakDetectionThreshold;
             set
             {
-                if (value < TimeSpan.Zero)
+                if (!TimeoutHelper.IsSupportedTimerTimeout(value, true))
                 {
                     throw new ArgumentException("invalid pool leak detection threshold value",
                         PoolLeakDetectionThresholdKey);
                 }
 
-                base[PoolLeakDetectionThresholdKey] = value.ToString();
+                base[PoolLeakDetectionThresholdKey] = value.ToString("c", CultureInfo.InvariantCulture);
                 _poolLeakDetectionThreshold = value;
             }
         }
 
 
-        public override ICollection Keys => new ReadOnlyCollection<string>((string[])KeysList);
+        public override ICollection Keys
+        {
+            get
+            {
+                var keys = new List<string>(KeysList.Count + base.Count);
+                keys.AddRange(KeysList);
+                foreach (var keyObject in base.Keys)
+                {
+                    var key = Convert.ToString(keyObject, CultureInfo.InvariantCulture);
+                    if (!KeysDict.ContainsKey(key))
+                    {
+                        keys.Add(key);
+                    }
+                }
+
+                return new ReadOnlyCollection<string>(keys);
+            }
+        }
 
         public override ICollection Values
         {
             get
             {
-                var values = new object[KeysList.Count];
+                var values = new List<object>(KeysList.Count + base.Count);
                 for (int i = 0; i < KeysList.Count; i++)
                 {
-                    values[i] = GetAt((KeysEnum)i);
+                    values.Add(GetAt((KeysEnum)i));
+                }
+
+                foreach (var keyObject in base.Keys)
+                {
+                    var key = Convert.ToString(keyObject, CultureInfo.InvariantCulture);
+                    if (!KeysDict.ContainsKey(key))
+                    {
+                        values.Add(base[key]);
+                    }
                 }
 
                 return new ReadOnlyCollection<object>(values);
+            }
+        }
+
+        private void SetAt(KeysEnum index, object value)
+        {
+            switch (index)
+            {
+                case KeysEnum.Host:
+                    Host = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.Port:
+                    Port = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.Database:
+                    Database = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.Username:
+                    Username = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.Password:
+                    Password = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.Protocol:
+                    Protocol = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.Timezone:
+                    Timezone = value as TimeZoneInfo ?? TimeZoneInfo.FindSystemTimeZoneById(
+                        Convert.ToString(value, CultureInfo.InvariantCulture));
+                    return;
+                case KeysEnum.ConnTimeout:
+                    ConnTimeout = value is TimeSpan connTimeout
+                        ? connTimeout
+                        : TimeSpan.Parse(Convert.ToString(value, CultureInfo.InvariantCulture),
+                            CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.ReadTimeout:
+                    ReadTimeout = value is TimeSpan readTimeout
+                        ? readTimeout
+                        : TimeSpan.Parse(Convert.ToString(value, CultureInfo.InvariantCulture),
+                            CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.WriteTimeout:
+                    WriteTimeout = value is TimeSpan writeTimeout
+                        ? writeTimeout
+                        : TimeSpan.Parse(Convert.ToString(value, CultureInfo.InvariantCulture),
+                            CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.Token:
+                    Token = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.UseSSL:
+                    UseSSL = Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.EnableCompression:
+                    EnableCompression = Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.AutoReconnect:
+                    AutoReconnect = Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.ReconnectRetryCount:
+                    ReconnectRetryCount = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.ReconnectIntervalMs:
+                    ReconnectIntervalMs = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.ConnectionTimezone:
+                    ConnectionTimezone = value as TimeZoneInfo ?? TimeZoneInfo.FindSystemTimeZoneById(
+                        Convert.ToString(value, CultureInfo.InvariantCulture));
+                    return;
+                case KeysEnum.BearerToken:
+                    BearerToken = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.AdapterHA:
+                    AdapterHA = Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.Pooling:
+                    Pooling = Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.MinPoolSize:
+                    MinPoolSize = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.MaxPoolSize:
+                    MaxPoolSize = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    return;
+                case KeysEnum.PoolConnectionTimeout:
+                    PoolConnectionTimeout = GetPoolTimeSpan(value, PoolConnectionTimeoutKey);
+                    return;
+                case KeysEnum.PoolKeepaliveTime:
+                    PoolKeepaliveTime = GetPoolTimeSpan(value, PoolKeepaliveTimeKey);
+                    return;
+                case KeysEnum.PoolMaxLifetime:
+                    PoolMaxLifetime = GetPoolTimeSpan(value, PoolMaxLifetimeKey);
+                    return;
+                case KeysEnum.PoolHousekeepingInterval:
+                    PoolHousekeepingInterval = GetPoolTimeSpan(value, PoolHousekeepingIntervalKey);
+                    return;
+                case KeysEnum.PoolCreationRetryBackoff:
+                    PoolCreationRetryBackoff = GetPoolTimeSpan(value, PoolCreationRetryBackoffKey);
+                    return;
+                case KeysEnum.PoolMaxCreationRetryBackoff:
+                    PoolMaxCreationRetryBackoff = GetPoolTimeSpan(value, PoolMaxCreationRetryBackoffKey);
+                    return;
+                case KeysEnum.PoolLeakDetectionThreshold:
+                    PoolLeakDetectionThreshold = GetPoolTimeSpan(value, PoolLeakDetectionThresholdKey);
+                    return;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(index), index, "set value error");
             }
         }
 
@@ -674,6 +768,8 @@ namespace TDengine.Driver
                     return ConnectionTimezone;
                 case KeysEnum.BearerToken:
                     return BearerToken;
+                case KeysEnum.AdapterHA:
+                    return AdapterHA;
                 case KeysEnum.Pooling:
                     return Pooling;
                 case KeysEnum.MinPoolSize:
@@ -703,9 +799,7 @@ namespace TDengine.Driver
         {
             if (!KeysDict.TryGetValue(keyword, out var index))
             {
-                value = null;
-
-                return false;
+                return base.TryGetValue(keyword, out value);
             }
 
             value = GetAt(index);
@@ -737,6 +831,7 @@ namespace TDengine.Driver
                     return;
                 case KeysEnum.Timezone:
                     _timezone = TimeZoneInfo.Local;
+                    _timezoneExplicit = false;
                     return;
                 case KeysEnum.ConnTimeout:
                     _connTimeout = TimeSpan.Zero;
@@ -770,6 +865,9 @@ namespace TDengine.Driver
                     return;
                 case KeysEnum.BearerToken:
                     _bearerToken = string.Empty;
+                    return;
+                case KeysEnum.AdapterHA:
+                    _adapterHA = false;
                     return;
                 case KeysEnum.Pooling:
                     _pooling = false;
@@ -808,8 +906,19 @@ namespace TDengine.Driver
 
         public override bool Remove(string keyword)
         {
-            if (!KeysDict.TryGetValue(keyword, out var index)
-                || !base.Remove(KeysList[(int)index]))
+            if (!KeysDict.TryGetValue(keyword, out var index))
+            {
+                return base.Remove(keyword);
+            }
+
+            var canonicalKeyword = KeysList[(int)index];
+            var removed = base.Remove(canonicalKeyword);
+            if (!string.Equals(keyword, canonicalKeyword, StringComparison.OrdinalIgnoreCase))
+            {
+                removed |= base.Remove(keyword);
+            }
+
+            if (!removed)
             {
                 return false;
             }
@@ -849,11 +958,11 @@ namespace TDengine.Driver
             var endpoints = new List<FailoverAddress>();
             var deduplicatedCacheKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var hostValue = Host ?? string.Empty;
-            var hostSegments = hostValue.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var hostSegments = hostValue.Split(new[] { ',' }, StringSplitOptions.None);
 
-            if (hostSegments.Length == 0)
+            if (hostSegments.Length == 0 || Array.Exists(hostSegments, string.IsNullOrWhiteSpace))
             {
-                throw new ArgumentException("host value cannot be empty", HostKey);
+                throw new ArgumentException("host value contains an empty endpoint", HostKey);
             }
 
             var isMultiHost = hostSegments.Length > 1;
@@ -911,6 +1020,7 @@ namespace TDengine.Driver
 
         internal WSClientAsyncPoolOptions CreateWebSocketAsyncPoolOptions()
         {
+            ValidatePoolSizes();
             return new WSClientAsyncPoolOptions
             {
                 MinIdle = MinPoolSize,
@@ -923,6 +1033,85 @@ namespace TDengine.Driver
                 MaxCreationRetryBackoff = PoolMaxCreationRetryBackoff,
                 LeakDetectionThreshold = PoolLeakDetectionThreshold
             };
+        }
+
+        internal ConnectionStringBuilder CreateSnapshot()
+        {
+            ValidatePoolSizes();
+            var snapshot = new ConnectionStringBuilder(string.Empty)
+            {
+                Host = Host,
+                Port = Port,
+                Database = Database,
+                Username = Username,
+                Password = Password,
+                Protocol = Protocol,
+                ConnTimeout = ConnTimeout,
+                ReadTimeout = ReadTimeout,
+                WriteTimeout = WriteTimeout,
+                Token = Token,
+                UseSSL = UseSSL,
+                EnableCompression = EnableCompression,
+                AutoReconnect = AutoReconnect,
+                ReconnectRetryCount = ReconnectRetryCount,
+                ReconnectIntervalMs = ReconnectIntervalMs,
+                BearerToken = BearerToken,
+                AdapterHA = AdapterHA,
+                Pooling = Pooling,
+                MinPoolSize = MinPoolSize,
+                MaxPoolSize = MaxPoolSize,
+                PoolConnectionTimeout = PoolConnectionTimeout,
+                PoolKeepaliveTime = PoolKeepaliveTime,
+                PoolMaxLifetime = PoolMaxLifetime,
+                PoolHousekeepingInterval = PoolHousekeepingInterval,
+                PoolCreationRetryBackoff = PoolCreationRetryBackoff,
+                PoolMaxCreationRetryBackoff = PoolMaxCreationRetryBackoff,
+                PoolLeakDetectionThreshold = PoolLeakDetectionThreshold
+            };
+
+            if (_timezoneExplicit)
+            {
+                snapshot.Timezone = Timezone;
+            }
+
+            if (ConnectionTimezone != null)
+            {
+                snapshot.ConnectionTimezone = ConnectionTimezone;
+            }
+
+            foreach (var keyObject in base.Keys)
+            {
+                var key = Convert.ToString(keyObject, CultureInfo.InvariantCulture);
+                if (!KeysDict.ContainsKey(key))
+                {
+                    snapshot[key] = base[key];
+                }
+            }
+
+            return snapshot;
+        }
+
+        private void ValidatePoolSizes()
+        {
+            if (_minPoolSize > _maxPoolSize)
+            {
+                throw new ArgumentException("minPoolSize cannot be greater than maxPoolSize", MinPoolSizeKey);
+            }
+        }
+
+        private static void ValidateNetworkTimeout(TimeSpan value, string keyword)
+        {
+            if (!TimeoutHelper.IsSupportedTimerTimeout(value, true))
+            {
+                throw new ArgumentException("invalid timeout value", keyword);
+            }
+        }
+
+        private static TimeSpan GetPoolTimeSpan(object value, string keyword)
+        {
+            return value is TimeSpan timeSpan
+                ? timeSpan
+                : ParsePoolTimeSpan(Convert.ToString(value, CultureInfo.InvariantCulture), keyword);
         }
 
         private static TimeSpan ParsePoolTimeSpan(string value, string keyword)
@@ -939,10 +1128,10 @@ namespace TDengine.Driver
             }
 
             TimeSpan result;
-            if (TryParsePoolTimeSpanWithSuffix(text, "ms", TimeSpan.FromMilliseconds, out result) ||
-                TryParsePoolTimeSpanWithSuffix(text, "s", TimeSpan.FromSeconds, out result) ||
-                TryParsePoolTimeSpanWithSuffix(text, "m", TimeSpan.FromMinutes, out result) ||
-                TryParsePoolTimeSpanWithSuffix(text, "h", TimeSpan.FromHours, out result))
+            if (TryParsePoolTimeSpanWithSuffix(text, "ms", TimeSpan.FromMilliseconds, keyword, out result) ||
+                TryParsePoolTimeSpanWithSuffix(text, "s", TimeSpan.FromSeconds, keyword, out result) ||
+                TryParsePoolTimeSpanWithSuffix(text, "m", TimeSpan.FromMinutes, keyword, out result) ||
+                TryParsePoolTimeSpanWithSuffix(text, "h", TimeSpan.FromHours, keyword, out result))
             {
                 return result;
             }
@@ -950,7 +1139,19 @@ namespace TDengine.Driver
             double milliseconds;
             if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out milliseconds))
             {
-                return TimeSpan.FromMilliseconds(milliseconds);
+                if (double.IsNaN(milliseconds) || double.IsInfinity(milliseconds))
+                {
+                    throw new ArgumentException("invalid pool timespan value", keyword);
+                }
+
+                try
+                {
+                    return TimeSpan.FromMilliseconds(milliseconds);
+                }
+                catch (Exception e) when (e is ArgumentException || e is OverflowException)
+                {
+                    throw new ArgumentException("invalid pool timespan value", keyword, e);
+                }
             }
 
             if (TimeSpan.TryParse(text, CultureInfo.InvariantCulture, out result))
@@ -962,7 +1163,7 @@ namespace TDengine.Driver
         }
 
         private static bool TryParsePoolTimeSpanWithSuffix(string value, string suffix,
-            Func<double, TimeSpan> factory, out TimeSpan result)
+            Func<double, TimeSpan> factory, string keyword, out TimeSpan result)
         {
             if (!value.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
             {
@@ -978,7 +1179,21 @@ namespace TDengine.Driver
                 return false;
             }
 
-            result = factory(parsed);
+            if (double.IsNaN(parsed) || double.IsInfinity(parsed))
+            {
+                result = default(TimeSpan);
+                return false;
+            }
+
+            try
+            {
+                result = factory(parsed);
+            }
+            catch (Exception e) when (e is ArgumentException || e is OverflowException)
+            {
+                throw new ArgumentException("invalid pool timespan value", keyword, e);
+            }
+
             return true;
         }
     }

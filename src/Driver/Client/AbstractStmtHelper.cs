@@ -110,19 +110,19 @@ namespace TDengine.Driver.Client
             }
         }
 
-        public bool IsInsert()
+        public virtual bool IsInsert()
         {
             CheckPrepared();
             return _isInsert;
         }
 
-        public TaosFieldE[] GetTagFields()
+        public virtual TaosFieldE[] GetTagFields()
         {
             CheckPrepared();
             return _tagFields;
         }
 
-        public TaosFieldE[] GetColFields()
+        public virtual TaosFieldE[] GetColFields()
         {
             CheckPrepared();
             return _colFields;

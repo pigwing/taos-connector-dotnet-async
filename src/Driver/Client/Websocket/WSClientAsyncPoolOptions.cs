@@ -43,38 +43,40 @@ namespace TDengine.Driver.Client.Websocket
                     "MinIdle cannot be greater than MaximumPoolSize.");
             }
 
-            if (ConnectionTimeout <= TimeSpan.Zero)
+            if (!TimeoutHelper.IsSupportedTimerTimeout(ConnectionTimeout, false))
             {
                 throw new ArgumentOutOfRangeException(nameof(ConnectionTimeout),
-                    "ConnectionTimeout must be greater than zero.");
+                    "ConnectionTimeout must be greater than zero and within the supported timer range.");
             }
 
-            if (KeepaliveTime < TimeSpan.Zero)
+            if (!TimeoutHelper.IsSupportedTimerTimeout(KeepaliveTime, true))
             {
-                throw new ArgumentOutOfRangeException(nameof(KeepaliveTime), "KeepaliveTime cannot be negative.");
+                throw new ArgumentOutOfRangeException(nameof(KeepaliveTime),
+                    "KeepaliveTime must be within the supported timer range.");
             }
 
-            if (MaxLifetime < TimeSpan.Zero)
+            if (!TimeoutHelper.IsSupportedTimerTimeout(MaxLifetime, true))
             {
-                throw new ArgumentOutOfRangeException(nameof(MaxLifetime), "MaxLifetime cannot be negative.");
+                throw new ArgumentOutOfRangeException(nameof(MaxLifetime),
+                    "MaxLifetime must be within the supported timer range.");
             }
 
-            if (HousekeepingInterval <= TimeSpan.Zero)
+            if (!TimeoutHelper.IsSupportedTimerTimeout(HousekeepingInterval, false))
             {
                 throw new ArgumentOutOfRangeException(nameof(HousekeepingInterval),
-                    "HousekeepingInterval must be greater than zero.");
+                    "HousekeepingInterval must be greater than zero and within the supported timer range.");
             }
 
-            if (CreationRetryBackoff < TimeSpan.Zero)
+            if (!TimeoutHelper.IsSupportedTimerTimeout(CreationRetryBackoff, true))
             {
                 throw new ArgumentOutOfRangeException(nameof(CreationRetryBackoff),
-                    "CreationRetryBackoff cannot be negative.");
+                    "CreationRetryBackoff must be within the supported timer range.");
             }
 
-            if (MaxCreationRetryBackoff < TimeSpan.Zero)
+            if (!TimeoutHelper.IsSupportedTimerTimeout(MaxCreationRetryBackoff, true))
             {
                 throw new ArgumentOutOfRangeException(nameof(MaxCreationRetryBackoff),
-                    "MaxCreationRetryBackoff cannot be negative.");
+                    "MaxCreationRetryBackoff must be within the supported timer range.");
             }
 
             if (MaxCreationRetryBackoff != TimeSpan.Zero && CreationRetryBackoff > MaxCreationRetryBackoff)
@@ -83,10 +85,10 @@ namespace TDengine.Driver.Client.Websocket
                     "CreationRetryBackoff cannot be greater than MaxCreationRetryBackoff.");
             }
 
-            if (LeakDetectionThreshold < TimeSpan.Zero)
+            if (!TimeoutHelper.IsSupportedTimerTimeout(LeakDetectionThreshold, true))
             {
                 throw new ArgumentOutOfRangeException(nameof(LeakDetectionThreshold),
-                    "LeakDetectionThreshold cannot be negative.");
+                    "LeakDetectionThreshold must be within the supported timer range.");
             }
 
             return new WSClientAsyncPoolOptions

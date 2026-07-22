@@ -262,10 +262,10 @@ namespace Driver.Test.Client.Query
         {
             FakeClientAsync createdClient = null!;
             using (var pool = CreateFakePool(new WSClientAsyncPoolOptions
-                   {
-                       MaximumPoolSize = 1,
-                       HousekeepingInterval = TimeSpan.FromMinutes(5)
-                   }, token =>
+                    {
+                        MaximumPoolSize = 1,
+                        HousekeepingInterval = TimeSpan.FromMinutes(5)
+                    }, token =>
                    {
                        createdClient = new FakeClientAsync(1);
                        return Task.FromResult<ITDengineClientAsync>(createdClient);
@@ -476,6 +476,7 @@ namespace Driver.Test.Client.Query
             using (var pool = CreateFakePool(new WSClientAsyncPoolOptions
                    {
                        MaximumPoolSize = 1,
+                       ConnectionTimeout = TimeSpan.FromMilliseconds(100),
                        HousekeepingInterval = TimeSpan.FromMinutes(5)
                    }, token =>
                    {
@@ -505,6 +506,37 @@ namespace Driver.Test.Client.Query
                 var finalMetrics = pool.GetMetrics();
                 Assert.Equal(0, finalMetrics.ActiveConnections);
                 Assert.Equal(0, finalMetrics.TotalConnections);
+            }
+        }
+
+        [Fact]
+        public async Task PoolDisposeDuringStmtExecRejectsLateSuccessfulCompletionTest()
+        {
+            var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (var pool = CreateFakePool(new WSClientAsyncPoolOptions
+                   {
+                       MaximumPoolSize = 1,
+                       ConnectionTimeout = TimeSpan.FromMilliseconds(100),
+                       HousekeepingInterval = TimeSpan.FromMinutes(5)
+                   }, _ => Task.FromResult<ITDengineClientAsync>(
+                       new FakeClientAsync(1, stmtFactory: () => new FakeStmtAsync(gate.Task)))))
+            {
+                IStmtAsync stmt;
+                using (var client = await pool.AcquireAsync())
+                {
+                    stmt = await client.StmtInitAsync();
+                }
+
+                var execTask = stmt.ExecAsync();
+                await Task.Delay(20);
+                pool.Dispose();
+                gate.TrySetResult(true);
+
+                await Assert.ThrowsAsync<ObjectDisposedException>(() => execTask);
+                var metrics = pool.GetMetrics();
+                Assert.Equal(0, metrics.ActiveConnections);
+                Assert.Equal(0, metrics.TotalConnections);
+                stmt.Dispose();
             }
         }
 
@@ -1110,10 +1142,30 @@ namespace Driver.Test.Client.Query
                 return new TaosFieldE[0];
             }
 
+            public async Task<TaosFieldE[]> GetTagFieldsAsync(CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ThrowIfDisposed();
+                await _fieldsGate.ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                ThrowIfDisposed();
+                return new TaosFieldE[0];
+            }
+
             public async Task<TaosFieldE[]> GetColFieldsAsync()
             {
                 ThrowIfDisposed();
                 await _fieldsGate.ConfigureAwait(false);
+                ThrowIfDisposed();
+                return new TaosFieldE[0];
+            }
+
+            public async Task<TaosFieldE[]> GetColFieldsAsync(CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                ThrowIfDisposed();
+                await _fieldsGate.ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 ThrowIfDisposed();
                 return new TaosFieldE[0];
             }

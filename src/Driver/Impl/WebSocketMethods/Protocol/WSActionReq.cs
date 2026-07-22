@@ -7,6 +7,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
         public const string Version = "version";
         public const string Conn = "conn";
         public const string Query = "query";
+        public const string BinaryQuery = "binary_query";
         public const string Fetch = "fetch";
         public const string FetchBlock = "fetch_block";
         public const string FreeResult = "free_result";
@@ -25,6 +26,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 
         public const string STMT2Init = "stmt2_init";
         public const string STMT2Prepare = "stmt2_prepare";
+        public const string STMT2Bind = "stmt2_bind";
         public const string STMT2Exec = "stmt2_exec";
         public const string STMT2Result = "stmt2_result";
         public const string STMT2Close = "stmt2_close";

@@ -1,9 +1,32 @@
 ﻿using System;
 
+using System.Globalization;
+
 namespace TDengine.Driver.Client
 {
     public abstract partial class AbstractStmt
     {
+        private static object SnapshotBindValue(object value)
+        {
+            if (value is byte[] bytes)
+            {
+                var snapshot = new byte[bytes.Length];
+#if NETSTANDARD2_1_OR_GREATER || NET5_0_OR_GREATER || NETCOREAPP2_1_OR_GREATER
+                bytes.AsSpan().CopyTo(snapshot);
+#else
+                if (bytes.Length != 0)
+                {
+                    Buffer.BlockCopy(bytes, 0, snapshot, 0, bytes.Length);
+                }
+#endif
+                return snapshot;
+            }
+
+            return value is decimal decimalValue
+                ? decimalValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : value;
+        }
+
         private static void CheckRowValue(object[] obj, TaosFieldE[] fields)
         {
             for (var i = 0; i < fields.Length; i++)
@@ -164,7 +187,7 @@ namespace TDengine.Driver.Client
             }
         }
 
-        public void BindRow(object[] row)
+        public virtual void BindRow(object[] row)
         {
             CheckPrepared();
             CheckTableNameSet();
@@ -184,10 +207,7 @@ namespace TDengine.Driver.Client
                 CheckRowValue(row, _colFields);
                 for (var i = 0; i < row.Length; i++)
                 {
-                    var value = row[i] is decimal d
-                        ? d.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        : row[i];
-                    _currentTableInfo.Cols[i].Add(value);
+                    _currentTableInfo.Cols[i].Add(SnapshotBindValue(row[i]));
                 }
             }
             else
@@ -216,14 +236,16 @@ namespace TDengine.Driver.Client
                         switch (row[i])
                         {
                             case DateTime dt:
-                                _currentTableInfo.Cols[i].Add(dt.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffK"));
+                                _currentTableInfo.Cols[i].Add(dt.ToString(
+                                    "yyyy-MM-dd'T'HH:mm:ss.fffffffK", CultureInfo.InvariantCulture));
                                 fields[i] = new TaosFieldE
                                 {
                                     type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BINARY,
                                 };
                                 break;
                             case DateTimeOffset dto:
-                                _currentTableInfo.Cols[i].Add(dto.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffffK"));
+                                _currentTableInfo.Cols[i].Add(dto.ToString(
+                                    "yyyy-MM-dd'T'HH:mm:ss.fffffffK", CultureInfo.InvariantCulture));
                                 fields[i] = new TaosFieldE
                                 {
                                     type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BINARY,
@@ -300,8 +322,14 @@ namespace TDengine.Driver.Client
                                 };
                                 break;
                             case string _:
-                            case byte[] _:
                                 _currentTableInfo.Cols[i].Add(row[i]);
+                                fields[i] = new TaosFieldE
+                                {
+                                    type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BINARY,
+                                };
+                                break;
+                            case byte[] _:
+                                _currentTableInfo.Cols[i].Add(SnapshotBindValue(row[i]));
                                 fields[i] = new TaosFieldE
                                 {
                                     type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BINARY,
@@ -315,7 +343,7 @@ namespace TDengine.Driver.Client
                                 };
                                 break;
                             case decimal d:
-                                _currentTableInfo.Cols[i].Add(d.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                                _currentTableInfo.Cols[i].Add(d.ToString(CultureInfo.InvariantCulture));
                                 fields[i] = new TaosFieldE
                                 {
                                     type = (sbyte)TDengineDataType.TSDB_DATA_TYPE_BINARY,

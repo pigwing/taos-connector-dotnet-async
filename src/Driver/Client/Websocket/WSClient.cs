@@ -13,19 +13,29 @@ namespace TDengine.Driver.Client.Websocket
         private int _disposed;
         private readonly TimeZoneInfo _tz;
         private readonly ConnectionStringBuilder _builder;
-        private readonly IReadOnlyList<FailoverAddress> _failoverAddresses;
+        private List<FailoverAddress> _failoverAddresses;
         private readonly object _reconnectLock = new object();
+        private readonly object _addressLock = new object();
 
         internal bool AutoReconnect => _builder.AutoReconnect;
+        internal bool AdapterHA => _builder.AdapterHA;
 
         public WSClient(ConnectionStringBuilder builder)
         {
             Debug.Assert(builder.Protocol == TDengineConstant.ProtocolWebSocket);
             _builder = builder;
             _tz = builder.GetTimeZone();
-            _failoverAddresses = builder.GetFailoverAddresses();
+            var seedAddresses = builder.GetFailoverAddresses();
+            IReadOnlyList<FailoverAddress> initialAddresses = seedAddresses;
+            if (AdapterHA)
+            {
+                initialAddresses = AdapterClusterRegistry.ExpandIfKnown(seedAddresses);
+            }
 
-            if (!FailoverConnector.TryOpen(_failoverAddresses, 1, 0, false, null, OpenWsConnection,
+            _failoverAddresses = new List<FailoverAddress>(initialAddresses);
+
+            if (!FailoverConnector.TryOpen(GetFailoverAddresses(), 1, 0, false, null,
+                    OpenWsConnectionWithDiscovery,
                     out var connection, out var lease, out var lastException))
             {
                 if (lastException != null)
@@ -81,7 +91,7 @@ namespace TDengine.Driver.Client.Websocket
 
             if (!string.IsNullOrEmpty(token))
             {
-                uriBuilder.Query = $"token={token}";
+                uriBuilder.Query = "token=" + Uri.EscapeDataString(token);
             }
 
             return uriBuilder.ToString();
@@ -130,13 +140,19 @@ namespace TDengine.Driver.Client.Websocket
             }
         }
 
-        private Connection OpenWsConnection(FailoverAddress address)
+        private Connection OpenWsConnectionWithDiscovery(FailoverAddress address)
         {
             Connection currentConnection = null;
             try
             {
                 currentConnection = CreateConnection(address);
-                currentConnection.Connect();
+                var response = currentConnection.Connect(AdapterHA);
+                if (AdapterHA && response != null && response.ListInstances != null &&
+                    response.ListInstances.Length > 0)
+                {
+                    SyncDiscoveredAddresses(response.ListInstances);
+                }
+
                 return currentConnection;
             }
             catch
@@ -147,6 +163,51 @@ namespace TDengine.Driver.Client.Websocket
                 }
 
                 throw;
+            }
+        }
+
+        private IReadOnlyList<FailoverAddress> GetFailoverAddresses()
+        {
+            lock (_addressLock)
+            {
+                return _failoverAddresses.ToArray();
+            }
+        }
+
+        private void SyncDiscoveredAddresses(string[] instances)
+        {
+            var discovered = AdapterHAHelper.ParseInstances(instances, TDengineConstant.ProtocolWebSocket,
+                _builder.UseSSL);
+            if (discovered == null)
+            {
+                return;
+            }
+
+            var seeds = _builder.GetFailoverAddresses();
+            IReadOnlyList<FailoverAddress> cluster;
+            lock (_addressLock)
+            {
+                var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var merged = new List<FailoverAddress>(seeds.Count + discovered.Count);
+                AddDistinctAddresses(seeds, keys, merged);
+                AddDistinctAddresses(discovered, keys, merged);
+                _failoverAddresses = merged;
+                cluster = merged.ToArray();
+            }
+
+            AdapterClusterRegistry.RegisterCluster(seeds, cluster);
+        }
+
+        private static void AddDistinctAddresses(IReadOnlyList<FailoverAddress> source, ISet<string> keys,
+            ICollection<FailoverAddress> destination)
+        {
+            for (var i = 0; i < source.Count; i++)
+            {
+                var address = source[i];
+                if (address != null && keys.Add(address.CacheKey))
+                {
+                    destination.Add(address);
+                }
             }
         }
 
@@ -185,8 +246,8 @@ namespace TDengine.Driver.Client.Websocket
                     preferredAddress = _addressLease == null ? null : _addressLease.Address;
                 }
 
-                if (!FailoverConnector.TryOpen(_failoverAddresses, _builder.ReconnectRetryCount,
-                        _builder.ReconnectIntervalMs, true, preferredAddress, OpenWsConnection,
+                if (!FailoverConnector.TryOpen(GetFailoverAddresses(), _builder.ReconnectRetryCount,
+                        _builder.ReconnectIntervalMs, true, preferredAddress, OpenWsConnectionWithDiscovery,
                         out var connection, out var lease, out var lastException))
                 {
                     lock (_reconnectLock)

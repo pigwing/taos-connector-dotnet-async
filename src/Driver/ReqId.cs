@@ -8,25 +8,56 @@ namespace TDengine.Driver
     public static class ReqId
     {
         private static readonly long UuidHashId;
-        private static long _serialNo;
         private static readonly long Pid;
+        private static long _timeAndSerial;
+        private const long TimeAndSerialMask = (1L << 46) - 1;
+        private const long TimeMask = (1L << 26) - 1;
+
         static ReqId()
         {
-            using (var md5 = MD5.Create())
+            var randomBytes = new byte[2];
+            using (var randomNumberGenerator = RandomNumberGenerator.Create())
             {
-                var tUuidBytes = Guid.NewGuid().ToByteArray();
-                var hashBytes = md5.ComputeHash(tUuidBytes);
-                UuidHashId = ((long)BitConverter.ToUInt32(hashBytes, 0) & 0x07ff) << 52;
+                randomNumberGenerator.GetBytes(randomBytes);
             }
 
+            UuidHashId = ((long)BitConverter.ToUInt16(randomBytes, 0) & 0x07ff) << 52;
+
             Pid = ((long)(Process.GetCurrentProcess().Id & 0x0f)) << 48;
+            _timeAndSerial = GetCurrentTimePart();
         }
 
         public static long GetReqId()
         {
-            long timeSpan = ((DateTime.UtcNow.Ticks -TDengineConstant.TimeZero.Ticks) / 10000)>> 8;
-            long val = Interlocked.Increment(ref _serialNo);
-            return UuidHashId | Pid | ((timeSpan & 0x3ffffff) << 20) | (val & 0xfffff);
+            while (true)
+            {
+                var current = Volatile.Read(ref _timeAndSerial);
+                var currentTimePart = GetCurrentTimePart();
+                var next = current >= currentTimePart
+                    ? (current + 1) & TimeAndSerialMask
+                    : currentTimePart;
+                if (Interlocked.CompareExchange(ref _timeAndSerial, next, current) == current)
+                {
+                    return UuidHashId | Pid | next;
+                }
+            }
+        }
+
+        private static long GetCurrentTimePart()
+        {
+            var timeWindow = ((DateTime.UtcNow.Ticks - TDengineConstant.TimeZero.Ticks) / 10000) >> 8;
+            return (timeWindow & TimeMask) << 20;
+        }
+
+        internal static long Normalize(long reqId, string parameterName)
+        {
+            if (reqId < 0)
+            {
+                throw new ArgumentOutOfRangeException(parameterName, reqId,
+                    "Request id cannot be negative.");
+            }
+
+            return reqId == 0 ? GetReqId() : reqId;
         }
 
         private const uint C1 = 0xcc9e2d51;
@@ -34,6 +65,7 @@ namespace TDengine.Driver
 
         public static uint MurmurHash32(byte[] data, uint seed)
         {
+            if (data == null) throw new ArgumentNullException(nameof(data));
             uint h1 = seed;
 
             int nBlocks = data.Length / 4;
@@ -41,7 +73,10 @@ namespace TDengine.Driver
             uint k1;
             for (int i = 0; i < nBlocks; i++)
             {
-                k1 = BitConverter.ToUInt32(data, p);
+                k1 = (uint)(data[p]
+                            | (data[p + 1] << 8)
+                            | (data[p + 2] << 16)
+                            | (data[p + 3] << 24));
 
                 k1 *= C1;
                 k1 = (k1 << 15) | (k1 >> 17);
@@ -54,20 +89,18 @@ namespace TDengine.Driver
                 p += 4;
             }
 
-            byte[] tail = new byte[data.Length - nBlocks * 4];
-            Buffer.BlockCopy(data, nBlocks * 4, tail, 0, tail.Length);
-
+            var tailOffset = nBlocks * 4;
             k1 = 0;
-            switch (tail.Length & 3)
+            switch (data.Length & 3)
             {
                 case 3:
-                    k1 ^= (uint)tail[2] << 16;
+                    k1 ^= (uint)data[tailOffset + 2] << 16;
                     goto case 2;
                 case 2:
-                    k1 ^= (uint)tail[1] << 8;
+                    k1 ^= (uint)data[tailOffset + 1] << 8;
                     goto case 1;
                 case 1:
-                    k1 ^= (uint)tail[0];
+                    k1 ^= data[tailOffset];
                     k1 *= C1;
                     k1 = (k1 << 15) | (k1 >> 17);
                     k1 *= C2;

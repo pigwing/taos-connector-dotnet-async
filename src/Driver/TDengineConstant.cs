@@ -273,17 +273,7 @@ namespace TDengine.Driver
                 throw new ArgumentException("Datetime Kind must be specified as UTC or Local.");
             }
 
-            switch (precision)
-            {
-                case TDenginePrecision.TSDB_TIME_PRECISION_MILLI:
-                    return (value.ToUniversalTime().Ticks - TimeZero.Ticks) / 10000;
-                case TDenginePrecision.TSDB_TIME_PRECISION_MICRO:
-                    return (value.ToUniversalTime().Ticks - TimeZero.Ticks) / 10;
-                case TDenginePrecision.TSDB_TIME_PRECISION_NANO:
-                    return (value.ToUniversalTime().Ticks - TimeZero.Ticks) * 100;
-                default:
-                    throw new NotSupportedException($"unknown precision {precision}");
-            }
+            return ConvertUtcTicksToTimestamp(value.ToUniversalTime().Ticks, precision);
         }
 
         public static long ConvertDateTimeToTimestamp(DateTime value, TDenginePrecision precision,
@@ -309,17 +299,7 @@ namespace TDengine.Driver
                 tz = TimeZoneInfo.Local;
             }
 
-            switch (precision)
-            {
-                case TDenginePrecision.TSDB_TIME_PRECISION_MILLI:
-                    return TimeZoneInfo.ConvertTime(TimeZero.AddTicks(value * 10000), tz);
-                case TDenginePrecision.TSDB_TIME_PRECISION_MICRO:
-                    return TimeZoneInfo.ConvertTime(TimeZero.AddTicks(value * 10), tz);
-                case TDenginePrecision.TSDB_TIME_PRECISION_NANO:
-                    return TimeZoneInfo.ConvertTime(TimeZero.AddTicks(value / 100), tz);
-                default:
-                    throw new NotSupportedException($"unknown precision {precision}");
-            }
+            return TimeZoneInfo.ConvertTime(TimeZero.AddTicks(ConvertTimestampToTicks(value, precision)), tz);
         }
 
         public static DateTimeOffset ConvertTimestampToDateTimeOffset(long value, TDenginePrecision precision,
@@ -330,35 +310,43 @@ namespace TDengine.Driver
                 throw new ArgumentNullException(nameof(tz), "TimeZoneInfo cannot be null.");
             }
 
-            DateTimeOffset utcDateTimeOffset;
-            switch (precision)
-            {
-                case TDenginePrecision.TSDB_TIME_PRECISION_MILLI:
-                    utcDateTimeOffset = new DateTimeOffset(TimeZero.AddTicks(value * 10000));
-                    break;
-                case TDenginePrecision.TSDB_TIME_PRECISION_MICRO:
-                    utcDateTimeOffset = new DateTimeOffset(TimeZero.AddTicks(value * 10));
-                    break;
-                case TDenginePrecision.TSDB_TIME_PRECISION_NANO:
-                    utcDateTimeOffset = new DateTimeOffset(TimeZero.AddTicks(value / 100));
-                    break;
-                default:
-                    throw new NotSupportedException($"unknown precision {precision}");
-            }
+            var utcDateTimeOffset = new DateTimeOffset(
+                TimeZero.AddTicks(ConvertTimestampToTicks(value, precision)));
 
             return TimeZoneInfo.ConvertTime(utcDateTimeOffset, tz);
         }
 
         public static long ConvertDateTimeOffsetToTimestamp(DateTimeOffset value, TDenginePrecision precision)
         {
+            return ConvertUtcTicksToTimestamp(value.UtcTicks, precision);
+        }
+
+        private static long ConvertUtcTicksToTimestamp(long utcTicks, TDenginePrecision precision)
+        {
+            var ticksSinceEpoch = checked(utcTicks - TimeZero.Ticks);
             switch (precision)
             {
                 case TDenginePrecision.TSDB_TIME_PRECISION_MILLI:
-                    return (value.UtcTicks - TimeZero.Ticks) / 10000;
+                    return ticksSinceEpoch / 10000;
                 case TDenginePrecision.TSDB_TIME_PRECISION_MICRO:
-                    return (value.UtcTicks - TimeZero.Ticks) / 10;
+                    return ticksSinceEpoch / 10;
                 case TDenginePrecision.TSDB_TIME_PRECISION_NANO:
-                    return (value.UtcTicks - TimeZero.Ticks) * 100;
+                    return checked(ticksSinceEpoch * 100);
+                default:
+                    throw new NotSupportedException($"unknown precision {precision}");
+            }
+        }
+
+        private static long ConvertTimestampToTicks(long value, TDenginePrecision precision)
+        {
+            switch (precision)
+            {
+                case TDenginePrecision.TSDB_TIME_PRECISION_MILLI:
+                    return checked(value * 10000);
+                case TDenginePrecision.TSDB_TIME_PRECISION_MICRO:
+                    return checked(value * 10);
+                case TDenginePrecision.TSDB_TIME_PRECISION_NANO:
+                    return value / 100;
                 default:
                     throw new NotSupportedException($"unknown precision {precision}");
             }
@@ -599,6 +587,61 @@ namespace TDengine.Driver
                     return false;
             }
         }
+
+        internal static bool IsSupportedDataType(int dataType)
+        {
+            switch ((TDengineDataType)dataType)
+            {
+                case TDengineDataType.TSDB_DATA_TYPE_NULL:
+                case TDengineDataType.TSDB_DATA_TYPE_BOOL:
+                case TDengineDataType.TSDB_DATA_TYPE_TINYINT:
+                case TDengineDataType.TSDB_DATA_TYPE_SMALLINT:
+                case TDengineDataType.TSDB_DATA_TYPE_INT:
+                case TDengineDataType.TSDB_DATA_TYPE_BIGINT:
+                case TDengineDataType.TSDB_DATA_TYPE_FLOAT:
+                case TDengineDataType.TSDB_DATA_TYPE_DOUBLE:
+                case TDengineDataType.TSDB_DATA_TYPE_BINARY:
+                case TDengineDataType.TSDB_DATA_TYPE_TIMESTAMP:
+                case TDengineDataType.TSDB_DATA_TYPE_NCHAR:
+                case TDengineDataType.TSDB_DATA_TYPE_UTINYINT:
+                case TDengineDataType.TSDB_DATA_TYPE_USMALLINT:
+                case TDengineDataType.TSDB_DATA_TYPE_UINT:
+                case TDengineDataType.TSDB_DATA_TYPE_UBIGINT:
+                case TDengineDataType.TSDB_DATA_TYPE_JSONTAG:
+                case TDengineDataType.TSDB_DATA_TYPE_VARBINARY:
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL:
+                case TDengineDataType.TSDB_DATA_TYPE_BLOB:
+                case TDengineDataType.TSDB_DATA_TYPE_GEOMETRY:
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL64:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        internal static bool IsValidTimestampPrecision(int precision)
+        {
+            return precision >= (int)TDenginePrecision.TSDB_TIME_PRECISION_MILLI &&
+                   precision <= (int)TDenginePrecision.TSDB_TIME_PRECISION_NANO;
+        }
+
+        internal static bool IsValidDecimalMetadata(int dataType, int precision, int scale)
+        {
+            if (precision < 1 || precision > 38 || scale < 0 || scale > precision)
+            {
+                return false;
+            }
+
+            switch ((TDengineDataType)dataType)
+            {
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL64:
+                    return precision <= 18;
+                case TDengineDataType.TSDB_DATA_TYPE_DECIMAL:
+                    return precision > 18;
+                default:
+                    return false;
+            }
+        }
         
     }
 
@@ -615,6 +658,7 @@ namespace TDengine.Driver
         TMQ_RES_DATA = 1,
         TMQ_RES_TABLE_META = 2,
         TMQ_RES_METADATA = 3,
+        TMQ_RES_RAWDATA = 4,
     }
 
     public struct TMQTopicAssignment

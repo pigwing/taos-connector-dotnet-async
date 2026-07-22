@@ -10,15 +10,17 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             TDengineSchemalessPrecision precision, int ttl, long reqId,
             CancellationToken cancellationToken = default)
         {
+            reqId = ReqId.Normalize(reqId, nameof(reqId));
+            var requestId = (ulong)reqId;
             return await SendJsonBackJsonAsync<WSSchemalessReq, WSSchemalessResp>(WSAction.SchemalessWrite,
                 new WSSchemalessReq
                 {
-                    ReqId = (ulong)reqId,
+                    ReqId = requestId,
                     Protocol = (int)protocol,
                     Precision = TDengineConstant.SchemalessPrecisionString(precision),
                     TTL = ttl,
                     Data = lines,
-                }, (ulong)reqId, cancellationToken).ConfigureAwait(false);
+                }, requestId, cancellationToken).ConfigureAwait(false);
         }
     }
 }

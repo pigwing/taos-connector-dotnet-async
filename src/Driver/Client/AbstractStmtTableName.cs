@@ -4,7 +4,7 @@ namespace TDengine.Driver.Client
 {
     public abstract partial class AbstractStmt
     {
-        public void SetTableName(string tableName)
+        public virtual void SetTableName(string tableName)
         {
             CheckPrepared();
             if (_needTableName)
@@ -20,14 +20,12 @@ namespace TDengine.Driver.Client
                     throw new ArgumentException("Table name cannot be null or empty");
                 }
 
-                if (_tableInfos.TryGetValue(tableName, out var info))
+                if (tableName.IndexOf('\0') >= 0)
                 {
-                    _currentTableInfo = info;
+                    throw new ArgumentException("Table name cannot contain a null character", nameof(tableName));
                 }
-                else
-                {
-                    _currentTableInfo.TableName = tableName;
-                }
+
+                _currentTableInfo.TableName = tableName;
 
                 IsTableNameSet = true;
             }
@@ -38,7 +36,7 @@ namespace TDengine.Driver.Client
             }
         }
 
-        public void SetTags(object[] tags)
+        public virtual void SetTags(object[] tags)
         {
             CheckPrepared();
             CheckTableNameSet();
@@ -52,11 +50,6 @@ namespace TDengine.Driver.Client
                 throw new InvalidOperationException("This statement does not need tags.");
             }
 
-            if (IsTagsSet)
-            {
-                return; 
-            }
-
             if (tags.Length != _tagFields.Length)
             {
                 throw new ArgumentException(
@@ -64,13 +57,23 @@ namespace TDengine.Driver.Client
             }
 
             CheckRowValue(tags, _tagFields);
-            if (_currentTableInfo.Tags == null)
+            var localTags = new object[tags.Length];
+            for (var i = 0; i < tags.Length; i++)
             {
-                var localTags = new object[tags.Length];
-                Array.Copy(tags, localTags, tags.Length);
-                _currentTableInfo.Tags = localTags;
+                localTags[i] = SnapshotBindValue(tags[i]);
             }
 
+            if (IsTagsSet)
+            {
+                if (!TagsEqual(_currentTableInfo.Tags, localTags))
+                {
+                    throw new InvalidOperationException("Tags have already been set with different values for the current batch.");
+                }
+
+                return;
+            }
+
+            _currentTableInfo.Tags = localTags;
             IsTagsSet = true;
         }
     }

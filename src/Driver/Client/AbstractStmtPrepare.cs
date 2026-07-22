@@ -4,7 +4,7 @@ namespace TDengine.Driver.Client
 {
     public abstract partial class AbstractStmt
     {
-        public void Prepare(string query)
+        public virtual void Prepare(string query)
         {
             ThrowIfDisposed();
             CleanCache();
