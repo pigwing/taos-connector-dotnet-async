@@ -175,20 +175,45 @@ await pool.WarmupAsync(cancellationToken);
 await using var leasedClient = await pool.AcquireAsync(cancellationToken);
 ```
 
-## Failover and Reconnect
+## taosAdapter HA, Failover, and Reconnect
 
-Multiple adapter addresses can be supplied in `host`. An endpoint may include its own port:
+### Dynamic adapter HA discovery
 
-```text
-protocol=WebSocket;host=adapter-1:6041,adapter-2:6041;username=root;password=taosdata;autoReconnect=true
+Enable adapter HA directly in the normal connection string. No separate client or pool API is required:
+
+```csharp
+var haBuilder = new ConnectionStringBuilder(
+    "protocol=WebSocket;" +
+    "host=adapter-1.example.com:6041,adapter-2.example.com:6041;" +
+    "db=async_demo;username=root;password=taosdata;useSSL=false;" +
+    "adapterHA=true;autoReconnect=true;" +
+    "reconnectRetryCount=3;reconnectIntervalMs=2000;" +
+    "pooling=true;minPoolSize=2;maxPoolSize=10");
+
+await using var client = await DbDriver.OpenAsync(haBuilder, cancellationToken);
 ```
 
-Use bracketed IPv6 endpoints, for example `[2001:db8::10]:6041`. Duplicate endpoints are removed after normalization.
+With `adapterHA=true`, each successful connection asks taosAdapter for its `list_instances` response. The connector validates and de-duplicates those `host:port` endpoints, merges them with the configured seed addresses, and caches the cluster map in the current process for 30 minutes. New clients and pooled physical connections using the same seeds can reuse that discovered map.
 
-- `autoReconnect=true` retries a failed physical connection.
-- `reconnectRetryCount` defaults to `3`.
-- `reconnectIntervalMs` defaults to `2000`.
-- `adapterHA=true` enables adapter instance discovery when the connected adapter supports the HA `list_instances` response.
+`autoReconnect=true` is required for automatic recovery after an established connection fails. Reconnect attempts use both configured seeds and discovered instances. `adapterHA=true` without `autoReconnect=true` performs discovery but does not recover a failed request connection automatically.
+
+Production requirements:
+
+- Configure at least two independent seed endpoints in `host`. If a process starts with an empty discovery cache and its only seed is down, it cannot discover the remaining instances.
+- taosAdapter must support `list_instances`. If the response is absent or empty, the connection remains usable but failover is limited to the configured seeds.
+- Every advertised instance address must be reachable from the application. In Docker or Kubernetes, do not advertise container-only IPs or `127.0.0.1` unless the client shares that network namespace.
+- All discovered instances use the connection's `useSSL`, credentials, token, and database settings.
+- Pooling needs no special handling: `pooling=true` creates HA-aware physical WebSocket connections and replaces failed ones before returning them to borrowers.
+
+### Static multi-address failover
+
+Comma-separated `host` values also work without dynamic discovery:
+
+```text
+protocol=WebSocket;host=adapter-1:6041,adapter-2:6041;username=root;password=taosdata;adapterHA=false;autoReconnect=true
+```
+
+An endpoint may include its own port. Use bracketed IPv6 endpoints, for example `[2001:db8::10]:6041`. Duplicate endpoints are removed after normalization. `reconnectRetryCount` defaults to `3`, and `reconnectIntervalMs` defaults to `2000` milliseconds.
 
 Do not blindly retry a write after an uncertain network failure. See [Failure semantics](#failure-semantics).
 
@@ -291,6 +316,20 @@ finally
 
 TMQ also supports assignment, seek, position, committed offset, explicit offset commit, and subscription inspection APIs. Multi-address `td.connect.ip` values use the same comma-separated failover format.
 
+`TMQConnectionAsync` is a low-level API. To request the adapter instance list, call the overload with `listInstances` enabled and inspect `ListInstances` in the response:
+
+```csharp
+var subscription = await consumer.SubscribeAsync(
+    new List<string> { "meters_topic" },
+    tmqOptions,
+    true,
+    cancellationToken);
+
+string[] adapterInstances = subscription.ListInstances;
+```
+
+The higher-level WebSocket TMQ consumer enables automatic adapter switching with `ws.adapterHA=true`, `ws.autoReconnect=true`, `ws.reconnect.retry.count`, and `ws.reconnect.interval.ms`. These TMQ keys are separate from the SQL client's connection-string keys.
+
 ## Connection String Reference
 
 | Option | Description |
@@ -312,7 +351,7 @@ TMQ also supports assignment, seek, position, committed offset, explicit offset 
 | `autoReconnect` | Enable reconnect/failover after a connection failure. |
 | `reconnectRetryCount` | Number of reconnect passes; default `3`. |
 | `reconnectIntervalMs` | Delay between reconnect passes; default `2000`. |
-| `adapterHA` | Request and use adapter HA instance information. |
+| `adapterHA` | Request `list_instances` from taosAdapter and add discovered endpoints to reconnect/failover. |
 | `pooling` | Enable the shared WebSocket async pool; default `false`. |
 
 Do not log complete connection strings because they commonly contain passwords or tokens.

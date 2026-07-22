@@ -175,20 +175,45 @@ await pool.WarmupAsync(cancellationToken);
 await using var leasedClient = await pool.AcquireAsync(cancellationToken);
 ```
 
-## Failover 与自动重连
+## taosAdapter HA、Failover 与自动重连
 
-`host` 可以配置多个 taosAdapter 地址，每个地址可以单独携带端口：
+### 动态发现 taosAdapter 集群
 
-```text
-protocol=WebSocket;host=adapter-1:6041,adapter-2:6041;username=root;password=taosdata;autoReconnect=true
+直接在普通连接字符串中启用 HA，不需要更换 client 或连接池 API：
+
+```csharp
+var haBuilder = new ConnectionStringBuilder(
+    "protocol=WebSocket;" +
+    "host=adapter-1.example.com:6041,adapter-2.example.com:6041;" +
+    "db=async_demo;username=root;password=taosdata;useSSL=false;" +
+    "adapterHA=true;autoReconnect=true;" +
+    "reconnectRetryCount=3;reconnectIntervalMs=2000;" +
+    "pooling=true;minPoolSize=2;maxPoolSize=10");
+
+await using var client = await DbDriver.OpenAsync(haBuilder, cancellationToken);
 ```
 
-IPv6 地址需要方括号，例如 `[2001:db8::10]:6041`。标准化后重复的 endpoint 会被自动去除。
+启用 `adapterHA=true` 后，每次成功连接都会向 taosAdapter 请求 `list_instances`。驱动会校验并去重返回的 `host:port`，与连接字符串中的种子地址合并，并在当前进程中缓存集群映射 30 分钟。使用相同种子地址的新 client 和池内物理连接可以复用该发现结果。
 
-- `autoReconnect=true`：物理连接失败后执行重连和 failover。
-- `reconnectRetryCount`：默认 `3` 次。
-- `reconnectIntervalMs`：每轮重连间隔，默认 `2000` 毫秒。
-- `adapterHA=true`：当 taosAdapter 支持 HA `list_instances` 响应时，启用实例发现和选择。
+已经建立的连接发生故障后，必须启用 `autoReconnect=true` 才会自动恢复。重连会同时尝试连接字符串中的种子地址和已发现实例。只设置 `adapterHA=true` 会完成发现，但不会在请求连接失败后自动恢复。
+
+生产环境注意事项：
+
+- `host` 建议至少配置两个相互独立的种子 endpoint。如果进程冷启动时缓存为空，并且唯一种子不可用，驱动无法发现其他实例。
+- taosAdapter 必须支持 `list_instances`。如果响应缺失或为空，当前连接仍可使用，但 failover 只能依赖连接字符串中的种子地址。
+- taosAdapter 返回的每个实例地址都必须能从应用侧直接访问。Docker 或 Kubernetes 环境不要返回仅容器内部可达的 IP 或 `127.0.0.1`，除非应用与其共享网络命名空间。
+- 所有发现实例都会沿用当前连接的 `useSSL`、凭据、Token 和数据库配置。
+- 连接池不需要额外配置：同时设置 `pooling=true` 后，池内物理 WebSocket 连接自动具备 HA 能力，故障连接会被淘汰和替换。
+
+### 静态多地址 failover
+
+即使关闭动态发现，也可以使用逗号分隔的 `host`：
+
+```text
+protocol=WebSocket;host=adapter-1:6041,adapter-2:6041;username=root;password=taosdata;adapterHA=false;autoReconnect=true
+```
+
+每个 endpoint 可以单独携带端口。IPv6 地址需要方括号，例如 `[2001:db8::10]:6041`。标准化后重复 endpoint 会被自动去除。`reconnectRetryCount` 默认 `3`，`reconnectIntervalMs` 默认 `2000` 毫秒。
 
 网络故障后的写入不能无条件重试，具体语义参见[异常与不确定写入](#异常与不确定写入)。
 
@@ -291,6 +316,20 @@ finally
 
 TMQ 还支持 assignment、seek、position、committed offset、显式 offset commit 和订阅状态查询。`td.connect.ip` 同样支持逗号分隔的多地址 failover。
 
+`TMQConnectionAsync` 是底层 API。需要请求 taosAdapter 实例列表时，应调用启用 `listInstances` 的重载，并读取响应中的 `ListInstances`：
+
+```csharp
+var subscription = await consumer.SubscribeAsync(
+    new List<string> { "meters_topic" },
+    tmqOptions,
+    true,
+    cancellationToken);
+
+string[] adapterInstances = subscription.ListInstances;
+```
+
+高层 WebSocket TMQ consumer 使用 `ws.adapterHA=true`、`ws.autoReconnect=true`、`ws.reconnect.retry.count` 和 `ws.reconnect.interval.ms` 启用自动实例切换。这些 TMQ 参数与 SQL client 的连接字符串参数相互独立。
+
 ## 连接字符串参数
 
 | 参数 | 说明 |
@@ -312,7 +351,7 @@ TMQ 还支持 assignment、seek、position、committed offset、显式 offset co
 | `autoReconnect` | 连接失败后启用重连和 failover。 |
 | `reconnectRetryCount` | 重连轮数，默认 `3`。 |
 | `reconnectIntervalMs` | 每轮重连间隔，默认 `2000` 毫秒。 |
-| `adapterHA` | 请求并使用 taosAdapter HA 实例信息。 |
+| `adapterHA` | 请求 taosAdapter 的 `list_instances`，并把发现 endpoint 加入重连和 failover。 |
 | `pooling` | 启用共享 WebSocket 异步连接池，默认 `false`。 |
 
 连接字符串通常包含密码或 Token，不要把完整连接字符串写入日志。
