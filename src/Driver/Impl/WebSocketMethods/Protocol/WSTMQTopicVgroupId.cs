@@ -1,11 +1,11 @@
-﻿using Newtonsoft.Json;
+﻿using System.Text.Json.Serialization;
 
 namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
     public class WSTopicVgroupId
     {
-        [JsonProperty("topic")] public string Topic { get; set; }
+        [JsonPropertyName("topic")] public string Topic { get; set; }
 
-        [JsonProperty("vgroup_id")] public int VGroupId { get; set; }
+        [JsonPropertyName("vgroup_id")] public int VGroupId { get; set; }
     }
 }

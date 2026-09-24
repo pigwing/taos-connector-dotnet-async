@@ -1,28 +1,28 @@
-﻿using Newtonsoft.Json;
+﻿using System.Text.Json.Serialization;
 
 namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
     public class WSStmtExecResp:IWSBaseResp
     {
-        [JsonProperty("code")]
+        [JsonPropertyName("code")]
         public int Code { get; set; }
 
-        [JsonProperty("message")]
+        [JsonPropertyName("message")]
         public string Message { get; set; }
 
-        [JsonProperty("action")]
+        [JsonPropertyName("action")]
         public string Action { get; set; }
 
-        [JsonProperty("req_id")]
+        [JsonPropertyName("req_id")]
         public ulong ReqId { get; set; }
 
-        [JsonProperty("timing")]
+        [JsonPropertyName("timing")]
         public long Timing { get; set; }
 
-        [JsonProperty("stmt_id")]
+        [JsonPropertyName("stmt_id")]
         public ulong StmtId { get; set; }
 
-        [JsonProperty("affected")]
+        [JsonPropertyName("affected")]
         public int Affected { get; set; }
     }
 }

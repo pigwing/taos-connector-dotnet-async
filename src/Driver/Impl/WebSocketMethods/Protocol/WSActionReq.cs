@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+﻿using System.Text.Json.Serialization;
 
 namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
@@ -63,8 +63,8 @@ namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 
     public class WSActionReq<T>
     {
-        [JsonProperty("action")] public string Action { get; set; }
+        [JsonPropertyName("action")] public string Action { get; set; }
 
-        [JsonProperty("args")] public T Args { get; set; }
+        [JsonPropertyName("args")] public T Args { get; set; }
     }
 }

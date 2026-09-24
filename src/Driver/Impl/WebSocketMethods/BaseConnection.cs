@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -7,7 +7,6 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
 using TDengine.Driver.Impl.WebSocketMethods.Protocol;
 
 namespace TDengine.Driver.Impl.WebSocketMethods
@@ -211,7 +210,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             WSBaseResp resp;
             try
             {
-                resp = JsonConvert.DeserializeObject<WSBaseResp>(Encoding.UTF8.GetString(respBytes));
+                resp = WsJson.Deserialize<WSBaseResp>(Encoding.UTF8.GetString(respBytes));
             }
             catch (Exception e)
             {
@@ -278,7 +277,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     "receive unexpected binary message");
             }
 
-            var resp = JsonConvert.DeserializeObject<T>(Encoding.UTF8.GetString(respBytes));
+            var resp = WsJson.Deserialize<T>(Encoding.UTF8.GetString(respBytes));
             if (resp.Code == 0) return resp;
             throw new TDengineError(resp.Code, resp.Message);
         }
@@ -326,7 +325,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             T2 resp;
             try
             {
-                resp = JsonConvert.DeserializeObject<T2>(Encoding.UTF8.GetString(respBytes));
+                resp = WsJson.Deserialize<T2>(Encoding.UTF8.GetString(respBytes));
             }
             catch (Exception e)
             {
@@ -388,7 +387,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             WSBaseResp resp;
             try
             {
-                resp = JsonConvert.DeserializeObject<WSBaseResp>(Encoding.UTF8.GetString(respBytes));
+                resp = WsJson.Deserialize<WSBaseResp>(Encoding.UTF8.GetString(respBytes));
             }
             catch (Exception)
             {
@@ -462,7 +461,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
         private async Task<string> AsyncSendJson<T>(string action, T req)
         {
-            var request = JsonConvert.SerializeObject(new WSActionReq<T>
+            var request = WsJson.Serialize(new WSActionReq<T>
             {
                 Action = action,
                 Args = req
@@ -553,7 +552,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                                 WSBaseResp resp;
                                 try
                                 {
-                                    resp = JsonConvert.DeserializeObject<WSBaseResp>(
+                                    resp = WsJson.Deserialize<WSBaseResp>(
                                         Encoding.UTF8.GetString(bs));
                                 }
                                 catch (Exception e)

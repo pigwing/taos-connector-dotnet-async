@@ -1,13 +1,13 @@
 ﻿using System.Collections.Generic;
-using Newtonsoft.Json;
+using System.Text.Json.Serialization;
 
 namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
     public class WSTMQPositionReq
     {
-        [JsonProperty("req_id")] public ulong ReqId { get; set; }
+        [JsonPropertyName("req_id")] public ulong ReqId { get; set; }
 
-        [JsonProperty("topic_vgroup_ids")] public List<WSTopicVgroupId> TopicVgroupIds { get; set; }
+        [JsonPropertyName("topic_vgroup_ids")] public List<WSTopicVgroupId> TopicVgroupIds { get; set; }
     }
 
 

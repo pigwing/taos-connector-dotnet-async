@@ -4,10 +4,9 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace Test.Fixture
 {
@@ -15,7 +14,7 @@ namespace Test.Fixture
     {
         private const int MaximumTestMessageSize = 16 * 1024 * 1024;
 
-        internal static async Task<JObject> ReceiveJsonAsync(WebSocket webSocket,
+        internal static async Task<JsonObject> ReceiveJsonAsync(WebSocket webSocket,
             CancellationToken cancellationToken)
         {
             var message = await ReceiveAsync(webSocket, cancellationToken).ConfigureAwait(false);
@@ -24,7 +23,12 @@ namespace Test.Fixture
                 throw new InvalidDataException("Expected a text WebSocket message.");
             }
 
-            return JObject.Parse(Encoding.UTF8.GetString(message.Bytes));
+            if (JsonNode.Parse(Encoding.UTF8.GetString(message.Bytes)) is not JsonObject jsonObject)
+            {
+                throw new InvalidDataException("Expected a JSON object WebSocket message.");
+            }
+
+            return jsonObject;
         }
 
         internal static async Task<WebSocketTestMessage> ReceiveAsync(WebSocket webSocket,
@@ -71,7 +75,7 @@ namespace Test.Fixture
             }
         }
 
-        internal static ulong GetRequestId(JObject request)
+        internal static ulong GetRequestId(JsonObject request)
         {
             var token = request["args"]?["req_id"] ?? request["req_id"];
             if (token == null)
@@ -79,12 +83,12 @@ namespace Test.Fixture
                 throw new InvalidDataException("The WebSocket request did not contain req_id.");
             }
 
-            return token.Value<ulong>();
+            return token.GetValue<ulong>();
         }
 
-        internal static string? GetAction(JObject request)
+        internal static string? GetAction(JsonObject request)
         {
-            return request["action"]?.Value<string>();
+            return request["action"]?.GetValue<string>();
         }
 
         internal static ulong GetBinaryRequestId(byte[] request)
@@ -97,7 +101,7 @@ namespace Test.Fixture
             return BinaryPrimitives.ReadUInt64LittleEndian(request.AsSpan(0, sizeof(ulong)));
         }
 
-        internal static Task SendVersionResponseAsync(WebSocket webSocket, JObject request,
+        internal static Task SendVersionResponseAsync(WebSocket webSocket, JsonObject request,
             CancellationToken cancellationToken)
         {
             if (!string.Equals(GetAction(request), "version", StringComparison.Ordinal))
@@ -105,16 +109,16 @@ namespace Test.Fixture
                 throw new InvalidDataException("Expected the initial version request.");
             }
 
-            return SendResponseAsync(webSocket, "version", 0, new JObject
+            return SendResponseAsync(webSocket, "version", 0, new JsonObject
             {
                 ["version"] = "3.3.6.0"
             }, false, cancellationToken);
         }
 
         internal static Task SendResponseAsync(WebSocket webSocket, string action, ulong requestId,
-            JObject additionalProperties, bool fragmented, CancellationToken cancellationToken)
+            JsonObject additionalProperties, bool fragmented, CancellationToken cancellationToken)
         {
-            var response = new JObject
+            var response = new JsonObject
             {
                 ["code"] = 0,
                 ["message"] = string.Empty,
@@ -124,19 +128,21 @@ namespace Test.Fixture
             };
             if (additionalProperties != null)
             {
-                foreach (var property in additionalProperties.Properties())
+                foreach (var property in additionalProperties)
                 {
-                    response[property.Name] = property.Value;
+                    response[property.Key] = property.Value == null
+                        ? null
+                        : JsonNode.Parse(property.Value.ToJsonString());
                 }
             }
 
-            return SendTextAsync(webSocket, response.ToString(Formatting.None), fragmented, cancellationToken);
+            return SendTextAsync(webSocket, response.ToJsonString(), fragmented, cancellationToken);
         }
 
         internal static Task SendErrorResponseAsync(WebSocket webSocket, string action, ulong requestId, int code,
             string message, CancellationToken cancellationToken)
         {
-            var response = new JObject
+            var response = new JsonObject
             {
                 ["code"] = code,
                 ["message"] = message,
@@ -144,7 +150,7 @@ namespace Test.Fixture
                 ["req_id"] = requestId,
                 ["timing"] = 0
             };
-            return SendTextAsync(webSocket, response.ToString(Formatting.None), false, cancellationToken);
+            return SendTextAsync(webSocket, response.ToJsonString(), false, cancellationToken);
         }
 
         internal static async Task SendTextAsync(WebSocket webSocket, string text, bool fragmented,

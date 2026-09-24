@@ -5,7 +5,7 @@ namespace Data.Tests
 {
     internal static class TestConnectionOptions
     {
-        public static string Host { get; } = GetEnvironmentValue("TEST_HOST", "192.168.1.18");
+        public static string Host { get; } = GetEnvironmentValue("TEST_HOST", "172.17.0.5");
 
         public static int NativePort { get; } = GetEnvironmentInt32("TEST_NATIVE_PORT", 6030);
 

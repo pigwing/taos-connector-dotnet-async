@@ -1,17 +1,17 @@
-﻿using Newtonsoft.Json;
+﻿using System.Text.Json.Serialization;
 
 namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
     public class WSSchemalessResp : IWSBaseResp
     {
-        [JsonProperty("code")] public int Code { get; set; }
+        [JsonPropertyName("code")] public int Code { get; set; }
 
-        [JsonProperty("message")] public string Message { get; set; }
+        [JsonPropertyName("message")] public string Message { get; set; }
 
-        [JsonProperty("req_id")] public ulong ReqId { get; set; }
+        [JsonPropertyName("req_id")] public ulong ReqId { get; set; }
 
-        [JsonProperty("action")] public string Action { get; set; }
+        [JsonPropertyName("action")] public string Action { get; set; }
 
-        [JsonProperty("timing")] public long Timing { get; set; }
+        [JsonPropertyName("timing")] public long Timing { get; set; }
     }
 }

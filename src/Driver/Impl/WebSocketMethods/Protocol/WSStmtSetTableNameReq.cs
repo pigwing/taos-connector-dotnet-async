@@ -1,13 +1,13 @@
-﻿using Newtonsoft.Json;
+﻿using System.Text.Json.Serialization;
 
 namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
     public class WSStmtSetTableNameReq
     {
-        [JsonProperty("req_id")] public ulong ReqId { get; set; }
+        [JsonPropertyName("req_id")] public ulong ReqId { get; set; }
 
-        [JsonProperty("stmt_id")] public ulong StmtId { get; set; }
+        [JsonPropertyName("stmt_id")] public ulong StmtId { get; set; }
 
-        [JsonProperty("name")] public string Name { get; set; }
+        [JsonPropertyName("name")] public string Name { get; set; }
     }
 }

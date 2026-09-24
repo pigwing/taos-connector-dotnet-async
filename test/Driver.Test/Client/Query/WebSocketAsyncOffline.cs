@@ -9,7 +9,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json.Linq;
+using System.Text.Json.Nodes;
 using TDengine.Driver;
 using TDengine.Driver.Client;
 using TDengine.Driver.Client.Websocket;
@@ -243,7 +243,7 @@ namespace Driver.Test.Client.Query
                 requestReceived.TrySetResult(true);
                 await releaseLateResponse.Task.ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.BinaryQuery, requestId,
-                    new JObject
+                    new JsonObject
                     {
                         ["is_update"] = false,
                         ["id"] = 9001UL,
@@ -252,9 +252,9 @@ namespace Driver.Test.Client.Query
 
                 var cleanup = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSAction.FreeResult, WebSocketTestProtocol.GetAction(cleanup));
-                Assert.Equal(9001UL, cleanup["args"]?["id"]?.Value<ulong>());
+                Assert.Equal(9001UL, cleanup["args"]?["id"]?.GetValue<ulong>());
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.FreeResult,
-                    WebSocketTestProtocol.GetRequestId(cleanup), new JObject(), false, token)
+                    WebSocketTestProtocol.GetRequestId(cleanup), new JsonObject(), false, token)
                     .ConfigureAwait(false);
                 cleanupObserved.TrySetResult(true);
 
@@ -293,14 +293,14 @@ namespace Driver.Test.Client.Query
                 requestReceived.TrySetResult(true);
                 await releaseLateResponse.Task.ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init,
-                    WebSocketTestProtocol.GetRequestId(init), new JObject { ["stmt_id"] = 9002UL }, false, token)
+                    WebSocketTestProtocol.GetRequestId(init), new JsonObject { ["stmt_id"] = 9002UL }, false, token)
                     .ConfigureAwait(false);
 
                 var cleanup = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSAction.STMT2Close, WebSocketTestProtocol.GetAction(cleanup));
-                Assert.Equal(9002UL, cleanup["args"]?["stmt_id"]?.Value<ulong>());
+                Assert.Equal(9002UL, cleanup["args"]?["stmt_id"]?.GetValue<ulong>());
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Close,
-                    WebSocketTestProtocol.GetRequestId(cleanup), new JObject(), false, token)
+                    WebSocketTestProtocol.GetRequestId(cleanup), new JsonObject(), false, token)
                     .ConfigureAwait(false);
                 cleanupObserved.TrySetResult(true);
 
@@ -339,7 +339,7 @@ namespace Driver.Test.Client.Query
                 requestReceived.TrySetResult(true);
                 await releaseLateResponse.Task.ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Result,
-                    WebSocketTestProtocol.GetRequestId(result), new JObject
+                    WebSocketTestProtocol.GetRequestId(result), new JsonObject
                     {
                         ["stmt_id"] = 9003UL,
                         ["id"] = 9004UL,
@@ -348,9 +348,9 @@ namespace Driver.Test.Client.Query
 
                 var cleanup = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSAction.FreeResult, WebSocketTestProtocol.GetAction(cleanup));
-                Assert.Equal(9004UL, cleanup["args"]?["id"]?.Value<ulong>());
+                Assert.Equal(9004UL, cleanup["args"]?["id"]?.GetValue<ulong>());
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.FreeResult,
-                    WebSocketTestProtocol.GetRequestId(cleanup), new JObject(), false, token)
+                    WebSocketTestProtocol.GetRequestId(cleanup), new JsonObject(), false, token)
                     .ConfigureAwait(false);
                 cleanupObserved.TrySetResult(true);
 
@@ -388,7 +388,7 @@ namespace Driver.Test.Client.Query
                 requestReceived.TrySetResult(true);
                 await releaseLateResponse.Task.ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.BinaryQuery, requestId,
-                    new JObject
+                    new JsonObject
                     {
                         ["is_update"] = false,
                         ["id"] = 9005UL,
@@ -531,12 +531,12 @@ namespace Driver.Test.Client.Query
                 var init = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 var initId = WebSocketTestProtocol.GetRequestId(init);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init, initId,
-                    new JObject { ["stmt_id"] = 1UL }, false, token).ConfigureAwait(false);
+                    new JsonObject { ["stmt_id"] = 1UL }, false, token).ConfigureAwait(false);
 
                 var prepare = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 var prepareId = WebSocketTestProtocol.GetRequestId(prepare);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Prepare, prepareId,
-                    new JObject
+                    new JsonObject
                     {
                         ["stmt_id"] = 1UL,
                         ["is_insert"] = false,
@@ -573,14 +573,15 @@ namespace Driver.Test.Client.Query
                 var init = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 var initId = WebSocketTestProtocol.GetRequestId(init);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init, initId,
-                    new JObject { ["stmt_id"] = 0UL }, false, token).ConfigureAwait(false);
+                    new JsonObject { ["stmt_id"] = 0UL }, false, token).ConfigureAwait(false);
 
                 try
                 {
                     var next = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
                     if (next.MessageType == WebSocketMessageType.Text)
                     {
-                        var request = JObject.Parse(Encoding.UTF8.GetString(next.Bytes));
+                        var request = JsonNode.Parse(Encoding.UTF8.GetString(next.Bytes))?.AsObject()
+                            ?? throw new InvalidDataException("Expected a JSON object WebSocket message.");
                         if (string.Equals(WebSocketTestProtocol.GetAction(request), WSAction.STMT2Close,
                                 StringComparison.Ordinal))
                         {
@@ -618,7 +619,7 @@ namespace Driver.Test.Client.Query
                 receivedLength.TrySetResult(bind.Bytes.Length);
                 var requestId = WebSocketTestProtocol.GetBinaryRequestId(bind.Bytes);
                 await WebSocketTestProtocol.SendResponseAsync(socket, "stmt2_bind", requestId,
-                    new JObject { ["stmt_id"] = 7UL }, false, token).ConfigureAwait(false);
+                    new JsonObject { ["stmt_id"] = 7UL }, false, token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
 
@@ -873,7 +874,7 @@ namespace Driver.Test.Client.Query
                 }
 
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQPoll, requestId,
-                    new JObject { ["have_message"] = false }, false, token).ConfigureAwait(false);
+                    new JsonObject { ["have_message"] = false }, false, token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
 
@@ -908,7 +909,7 @@ namespace Driver.Test.Client.Query
 
                 var poll = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQPoll,
-                    WebSocketTestProtocol.GetRequestId(poll), new JObject
+                    WebSocketTestProtocol.GetRequestId(poll), new JsonObject
                     {
                         ["have_message"] = true,
                         ["topic"] = "raw_topic",
@@ -921,7 +922,7 @@ namespace Driver.Test.Client.Query
 
                 var fetchRaw = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSTMQAction.TMQFetchRaw, WebSocketTestProtocol.GetAction(fetchRaw));
-                Assert.Equal(99UL, fetchRaw["args"]?["message_id"]?.Value<ulong>());
+                Assert.Equal(99UL, fetchRaw["args"]?["message_id"]?.GetValue<ulong>());
                 var fetchRequestId = WebSocketTestProtocol.GetRequestId(fetchRaw);
                 var rawResponse = new byte[34];
                 BinaryPrimitives.WriteUInt64LittleEndian(rawResponse.AsSpan(0), ulong.MaxValue);
@@ -959,7 +960,7 @@ namespace Driver.Test.Client.Query
                 await WebSocketTestProtocol.SendVersionResponseAsync(socket, version, token).ConfigureAwait(false);
                 var poll = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQPoll,
-                    WebSocketTestProtocol.GetRequestId(poll), new JObject
+                    WebSocketTestProtocol.GetRequestId(poll), new JsonObject
                     {
                         ["have_message"] = true,
                         ["vgroup_id"] = 0,
@@ -989,7 +990,7 @@ namespace Driver.Test.Client.Query
                 var assignment = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token)
                     .ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQGetTopicAssignment,
-                    WebSocketTestProtocol.GetRequestId(assignment), new JObject(), false, token)
+                    WebSocketTestProtocol.GetRequestId(assignment), new JsonObject(), false, token)
                     .ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
@@ -1019,9 +1020,9 @@ namespace Driver.Test.Client.Query
                 var commit = ReferenceEquals(poll, first) ? second : first;
 
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQCommit,
-                    WebSocketTestProtocol.GetRequestId(commit), new JObject(), false, token).ConfigureAwait(false);
+                    WebSocketTestProtocol.GetRequestId(commit), new JsonObject(), false, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQPoll,
-                    WebSocketTestProtocol.GetRequestId(poll), new JObject { ["have_message"] = false }, false,
+                    WebSocketTestProtocol.GetRequestId(poll), new JsonObject { ["have_message"] = false }, false,
                     token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
@@ -1077,7 +1078,8 @@ namespace Driver.Test.Client.Query
                 var committed = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQCommitted,
                     WebSocketTestProtocol.GetRequestId(committed),
-                    new JObject { ["committed"] = new JArray(1L) }, false, token).ConfigureAwait(false);
+                    new JsonObject { ["committed"] = new JsonArray(JsonValue.Create(1L)) }, false, token)
+                        .ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
 
@@ -1128,7 +1130,7 @@ namespace Driver.Test.Client.Query
                 await CompleteConnectionHandshakeAsync(socket, token).ConfigureAwait(false);
                 var query = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, "unexpected_query_action",
-                    WebSocketTestProtocol.GetBinaryRequestId(query.Bytes), new JObject
+                    WebSocketTestProtocol.GetBinaryRequestId(query.Bytes), new JsonObject
                     {
                         ["is_update"] = true,
                         ["affected_rows"] = 1,
@@ -1157,7 +1159,7 @@ namespace Driver.Test.Client.Query
                 await CompleteConnectionHandshakeAsync(socket, token).ConfigureAwait(false);
                 var query = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, responseAction,
-                    WebSocketTestProtocol.GetBinaryRequestId(query.Bytes), new JObject
+                    WebSocketTestProtocol.GetBinaryRequestId(query.Bytes), new JsonObject
                     {
                         ["is_update"] = true,
                         ["affected_rows"] = 1,
@@ -1208,7 +1210,7 @@ namespace Driver.Test.Client.Query
                 await CompleteConnectionHandshakeAsync(socket, token).ConfigureAwait(false);
                 var bind = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, "unexpected_stmt2_bind_action",
-                    WebSocketTestProtocol.GetBinaryRequestId(bind.Bytes), new JObject { ["stmt_id"] = 7UL },
+                    WebSocketTestProtocol.GetBinaryRequestId(bind.Bytes), new JsonObject { ["stmt_id"] = 7UL },
                     false, token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
@@ -1231,17 +1233,17 @@ namespace Driver.Test.Client.Query
                 await CompleteConnectionHandshakeAsync(socket, token).ConfigureAwait(false);
                 var init = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init,
-                    WebSocketTestProtocol.GetRequestId(init), new JObject { ["stmt_id"] = 77UL }, false, token)
+                    WebSocketTestProtocol.GetRequestId(init), new JsonObject { ["stmt_id"] = 77UL }, false, token)
                     .ConfigureAwait(false);
 
                 var prepare = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Prepare,
-                    WebSocketTestProtocol.GetRequestId(prepare), new JObject
+                    WebSocketTestProtocol.GetRequestId(prepare), new JsonObject
                     {
                         ["stmt_id"] = 77UL,
                         ["is_insert"] = true,
                         ["fields_count"] = 1,
-                        ["fields"] = new JArray(new JObject
+                        ["fields"] = new JsonArray(new JsonObject
                         {
                             ["name"] = "value",
                             ["field_type"] = (int)TDengineDataType.TSDB_DATA_TYPE_DECIMAL64,
@@ -1483,7 +1485,7 @@ namespace Driver.Test.Client.Query
                 var request = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
                 var requestId = WebSocketTestProtocol.GetBinaryRequestId(request.Bytes);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.FreeResult, requestId,
-                    new JObject(), false, token).ConfigureAwait(false);
+                    new JsonObject(), false, token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
 
@@ -1625,17 +1627,17 @@ namespace Driver.Test.Client.Query
                 var query = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
                 var queryId = WebSocketTestProtocol.GetBinaryRequestId(query.Bytes);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.Query, queryId,
-                    new JObject
+                    new JsonObject
                     {
                         ["is_update"] = false,
                         ["id"] = 9001UL,
                         ["fields_count"] = 1,
                         ["precision"] = 0,
-                        ["fields_names"] = new JArray("value"),
-                        ["fields_types"] = new JArray((int)TDengineDataType.TSDB_DATA_TYPE_INT),
-                        ["fields_lengths"] = new JArray(sizeof(int)),
-                        ["fields_precisions"] = new JArray(0),
-                        ["fields_scales"] = new JArray(0)
+                        ["fields_names"] = new JsonArray(JsonValue.Create("value")),
+                        ["fields_types"] = new JsonArray(JsonValue.Create((int)TDengineDataType.TSDB_DATA_TYPE_INT)),
+                        ["fields_lengths"] = new JsonArray(JsonValue.Create(sizeof(int))),
+                        ["fields_precisions"] = new JsonArray(JsonValue.Create(0)),
+                        ["fields_scales"] = new JsonArray(JsonValue.Create(0))
                     }, false, token).ConfigureAwait(false);
 
                 await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
@@ -1670,7 +1672,7 @@ namespace Driver.Test.Client.Query
                 await CompleteConnectionHandshakeAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.Query, 0,
-                    new JObject { ["version"] = "3.3.6.0" }, false, token).ConfigureAwait(false);
+                    new JsonObject { ["version"] = "3.3.6.0" }, false, token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
 
@@ -1795,7 +1797,7 @@ namespace Driver.Test.Client.Query
                 await CompleteConnectionHandshakeAsync(socket, token).ConfigureAwait(false);
                 var init = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init,
-                    WebSocketTestProtocol.GetRequestId(init), new JObject { ["stmt_id"] = 33UL }, false, token)
+                    WebSocketTestProtocol.GetRequestId(init), new JsonObject { ["stmt_id"] = 33UL }, false, token)
                     .ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
@@ -1866,7 +1868,7 @@ namespace Driver.Test.Client.Query
                 queryReceived.TrySetResult(true);
                 await releaseResponse.Task.ConfigureAwait(false);
                 var invalidMetadata = CreateSingleIntResultProperties(9203);
-                invalidMetadata["fields_names"] = new JArray();
+                invalidMetadata["fields_names"] = new JsonArray();
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.Query, queryId,
                     invalidMetadata, false, token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
@@ -1907,7 +1909,7 @@ namespace Driver.Test.Client.Query
                 {
                     var init = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                     await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init,
-                        WebSocketTestProtocol.GetRequestId(init), new JObject { ["stmt_id"] = 41UL }, false, token)
+                        WebSocketTestProtocol.GetRequestId(init), new JsonObject { ["stmt_id"] = 41UL }, false, token)
                         .ConfigureAwait(false);
                     await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
                     return;
@@ -1923,14 +1925,14 @@ namespace Driver.Test.Client.Query
                 secondInitReceived.TrySetResult(true);
                 await releaseSecondInit.Task.ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init,
-                    WebSocketTestProtocol.GetRequestId(reconnectInit), new JObject { ["stmt_id"] = 42UL }, false,
+                    WebSocketTestProtocol.GetRequestId(reconnectInit), new JsonObject { ["stmt_id"] = 42UL }, false,
                     token).ConfigureAwait(false);
 
                 var close = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSAction.STMT2Close, WebSocketTestProtocol.GetAction(close));
-                Assert.Equal(42UL, close["args"]?["stmt_id"]?.Value<ulong>());
+                Assert.Equal(42UL, close["args"]?["stmt_id"]?.GetValue<ulong>());
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Close,
-                    WebSocketTestProtocol.GetRequestId(close), new JObject(), false, token)
+                    WebSocketTestProtocol.GetRequestId(close), new JsonObject(), false, token)
                     .ConfigureAwait(false);
 
                 var query = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
@@ -1969,12 +1971,12 @@ namespace Driver.Test.Client.Query
                 {
                     var init = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                     await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init,
-                        WebSocketTestProtocol.GetRequestId(init), new JObject { ["stmt_id"] = 51UL }, false, token)
+                        WebSocketTestProtocol.GetRequestId(init), new JsonObject { ["stmt_id"] = 51UL }, false, token)
                         .ConfigureAwait(false);
                     var prepare = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token)
                         .ConfigureAwait(false);
                     await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Prepare,
-                        WebSocketTestProtocol.GetRequestId(prepare), new JObject
+                        WebSocketTestProtocol.GetRequestId(prepare), new JsonObject
                         {
                             ["stmt_id"] = 51UL,
                             ["is_insert"] = false,
@@ -1992,7 +1994,7 @@ namespace Driver.Test.Client.Query
                 var reconnectInit = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token)
                     .ConfigureAwait(false);
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Init,
-                    WebSocketTestProtocol.GetRequestId(reconnectInit), new JObject { ["stmt_id"] = 52UL }, false,
+                    WebSocketTestProtocol.GetRequestId(reconnectInit), new JsonObject { ["stmt_id"] = 52UL }, false,
                     token).ConfigureAwait(false);
                 var reprepare = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token)
                     .ConfigureAwait(false);
@@ -2002,9 +2004,9 @@ namespace Driver.Test.Client.Query
 
                 var close = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSAction.STMT2Close, WebSocketTestProtocol.GetAction(close));
-                Assert.Equal(52UL, close["args"]?["stmt_id"]?.Value<ulong>());
+                Assert.Equal(52UL, close["args"]?["stmt_id"]?.GetValue<ulong>());
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Close,
-                    WebSocketTestProtocol.GetRequestId(close), new JObject(), false, token)
+                    WebSocketTestProtocol.GetRequestId(close), new JsonObject(), false, token)
                     .ConfigureAwait(false);
 
                 var query = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
@@ -2240,7 +2242,7 @@ namespace Driver.Test.Client.Query
             }
 
             var requestId = WebSocketTestProtocol.GetRequestId(connect);
-            await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.Conn, requestId, new JObject(),
+            await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.Conn, requestId, new JsonObject(),
                 false, cancellationToken).ConfigureAwait(false);
         }
 
@@ -2248,7 +2250,7 @@ namespace Driver.Test.Client.Query
             bool fragmented, CancellationToken cancellationToken)
         {
             return WebSocketTestProtocol.SendResponseAsync(socket, WSAction.BinaryQuery, requestId,
-                new JObject
+                new JsonObject
                 {
                     ["is_update"] = true,
                     ["affected_rows"] = affectedRows,
@@ -2338,19 +2340,19 @@ namespace Driver.Test.Client.Query
                 (_, _) => Task.FromResult(response), TimeZoneInfo.Utc);
         }
 
-        private static JObject CreateSingleIntResultProperties(ulong resultId)
+        private static JsonObject CreateSingleIntResultProperties(ulong resultId)
         {
-            return new JObject
+            return new JsonObject
             {
                 ["is_update"] = false,
                 ["id"] = resultId,
                 ["fields_count"] = 1,
                 ["precision"] = 0,
-                ["fields_names"] = new JArray("value"),
-                ["fields_types"] = new JArray((int)TDengineDataType.TSDB_DATA_TYPE_INT),
-                ["fields_lengths"] = new JArray(sizeof(int)),
-                ["fields_precisions"] = new JArray(0),
-                ["fields_scales"] = new JArray(0)
+                ["fields_names"] = new JsonArray(JsonValue.Create("value")),
+                ["fields_types"] = new JsonArray(JsonValue.Create((int)TDengineDataType.TSDB_DATA_TYPE_INT)),
+                ["fields_lengths"] = new JsonArray(JsonValue.Create(sizeof(int))),
+                ["fields_precisions"] = new JsonArray(JsonValue.Create(0)),
+                ["fields_scales"] = new JsonArray(JsonValue.Create(0))
             };
         }
 

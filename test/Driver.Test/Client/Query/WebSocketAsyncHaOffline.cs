@@ -6,7 +6,7 @@ using System.Net.WebSockets;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json.Linq;
+using System.Text.Json.Nodes;
 using TDengine.Driver;
 using TDengine.Driver.Client.Websocket;
 using TDengine.Driver.Impl.WebSocketMethods;
@@ -29,7 +29,7 @@ namespace Driver.Test.Client.Query
             await using var server = new LoopbackWebSocketServer(async (socket, _, token) =>
             {
                 var connect = await ReceiveConnectRequestAsync(socket, token).ConfigureAwait(false);
-                observedListInstances = connect["args"]?["list_instances"]?.Value<bool>();
+                observedListInstances = connect["args"]?["list_instances"]?.GetValue<bool>();
                 await SendConnectResponseAsync(socket, connect, null, token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
@@ -48,7 +48,7 @@ namespace Driver.Test.Client.Query
             await using var discoveredServer = new LoopbackWebSocketServer(async (socket, _, token) =>
             {
                 var connect = await ReceiveConnectRequestAsync(socket, token).ConfigureAwait(false);
-                Assert.True(connect["args"]?["list_instances"]?.Value<bool>());
+                Assert.True(connect["args"]?["list_instances"]?.GetValue<bool>());
                 await SendConnectResponseAsync(socket, connect, null, token).ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
@@ -138,10 +138,13 @@ namespace Driver.Test.Client.Query
 
                 var subscribe = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSTMQAction.TMQSubscribe, WebSocketTestProtocol.GetAction(subscribe));
-                Assert.True(subscribe["args"]?["list_instances"]?.Value<bool>());
+                Assert.True(subscribe["args"]?["list_instances"]?.GetValue<bool>());
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQSubscribe,
                     WebSocketTestProtocol.GetRequestId(subscribe),
-                    new JObject { ["list_instances"] = new JArray(discovered) }, false, token)
+                    new JsonObject
+                    {
+                        ["list_instances"] = new JsonArray(JsonValue.Create(discovered))
+                    }, false, token)
                     .ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
@@ -168,10 +171,10 @@ namespace Driver.Test.Client.Query
 
                 var subscribe = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSTMQAction.TMQSubscribe, WebSocketTestProtocol.GetAction(subscribe));
-                Assert.Equal("topic-a", subscribe["args"]?["topics"]?[0]?.Value<string>());
-                Assert.Equal("topic-b", subscribe["args"]?["topics"]?[1]?.Value<string>());
+                Assert.Equal("topic-a", subscribe["args"]?["topics"]?[0]?.GetValue<string>());
+                Assert.Equal("topic-b", subscribe["args"]?["topics"]?[1]?.GetValue<string>());
                 await WebSocketTestProtocol.SendResponseAsync(socket, WSTMQAction.TMQSubscribe,
-                    WebSocketTestProtocol.GetRequestId(subscribe), new JObject(), false, token)
+                    WebSocketTestProtocol.GetRequestId(subscribe), new JsonObject(), false, token)
                     .ConfigureAwait(false);
             });
 
@@ -224,7 +227,7 @@ namespace Driver.Test.Client.Query
             });
         }
 
-        private static async Task<JObject> ReceiveConnectRequestAsync(WebSocket socket,
+        private static async Task<JsonObject> ReceiveConnectRequestAsync(WebSocket socket,
             CancellationToken cancellationToken)
         {
             var version = await WebSocketTestProtocol.ReceiveJsonAsync(socket, cancellationToken)
@@ -243,13 +246,14 @@ namespace Driver.Test.Client.Query
             return connect;
         }
 
-        private static Task SendConnectResponseAsync(WebSocket socket, JObject request, string[]? instances,
+        private static Task SendConnectResponseAsync(WebSocket socket, JsonObject request, string[]? instances,
             CancellationToken cancellationToken)
         {
-            var properties = new JObject();
+            var properties = new JsonObject();
             if (instances != null)
             {
-                properties["list_instances"] = new JArray(instances);
+                properties["list_instances"] = new JsonArray(Array.ConvertAll<string, JsonNode>(instances,
+                    instance => JsonValue.Create(instance)!));
             }
 
             return WebSocketTestProtocol.SendResponseAsync(socket, WSAction.Conn,

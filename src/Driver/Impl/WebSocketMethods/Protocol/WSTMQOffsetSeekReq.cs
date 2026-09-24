@@ -1,15 +1,15 @@
-﻿using Newtonsoft.Json;
+﻿using System.Text.Json.Serialization;
 
 namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
     public class WSTMQOffsetSeekReq
     {
-        [JsonProperty("req_id")] public ulong ReqId { get; set; }
+        [JsonPropertyName("req_id")] public ulong ReqId { get; set; }
 
-        [JsonProperty("topic")] public string Topic { get; set; }
+        [JsonPropertyName("topic")] public string Topic { get; set; }
 
-        [JsonProperty("vgroup_id")] public int VGroupId { get; set; }
+        [JsonPropertyName("vgroup_id")] public int VGroupId { get; set; }
 
-        [JsonProperty("offset")] public long Offset { get; set; }
+        [JsonPropertyName("offset")] public long Offset { get; set; }
     }
 }

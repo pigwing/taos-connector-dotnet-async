@@ -1,21 +1,21 @@
-﻿using Newtonsoft.Json;
+﻿using System.Text.Json.Serialization;
 
 namespace TDengine.Driver.Impl.WebSocketMethods.Protocol
 {
     public interface IWSMetaResp
     {
-        [JsonProperty("fields_count")] int FieldsCount { get; set; }
+        [JsonPropertyName("fields_count")] int FieldsCount { get; set; }
 
-        [JsonProperty("fields_names")] string[] FieldsNames { get; set; }
+        [JsonPropertyName("fields_names")] string[] FieldsNames { get; set; }
 
-        [JsonProperty("fields_types")] byte[] FieldsTypes { get; set; }
+        [JsonPropertyName("fields_types")] byte[] FieldsTypes { get; set; }
 
-        [JsonProperty("fields_lengths")] long[] FieldsLengths { get; set; }
+        [JsonPropertyName("fields_lengths")] long[] FieldsLengths { get; set; }
 
-        [JsonProperty("precision")] int Precision { get; set; }
+        [JsonPropertyName("precision")] int Precision { get; set; }
 
-        [JsonProperty("fields_precisions")] byte[] FieldsPrecisions { get; set; }
+        [JsonPropertyName("fields_precisions")] byte[] FieldsPrecisions { get; set; }
 
-        [JsonProperty("fields_scales")] byte[] FieldsScales { get; set; }
+        [JsonPropertyName("fields_scales")] byte[] FieldsScales { get; set; }
     }
 }

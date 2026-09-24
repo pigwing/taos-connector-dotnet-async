@@ -3,7 +3,7 @@ using TDengine.Driver;
 using TDengine.Driver.Client;
 using TDengine.Driver.Client.Websocket;
 
-var host = Environment.GetEnvironmentVariable("TEST_HOST") ?? "192.168.1.18";
+var host = Environment.GetEnvironmentVariable("TEST_HOST") ?? "172.17.0.5";
 var port = int.TryParse(Environment.GetEnvironmentVariable("TEST_WS_PORT"), out var configuredPort)
     ? configuredPort : 6341;
 var user = Environment.GetEnvironmentVariable("TEST_USER") ?? "root";

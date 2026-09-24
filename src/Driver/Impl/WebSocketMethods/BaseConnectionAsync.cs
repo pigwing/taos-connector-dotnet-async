@@ -6,9 +6,10 @@ using System.Globalization;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
 using TDengine.Driver.Impl.WebSocketMethods.Protocol;
 
 namespace TDengine.Driver.Impl.WebSocketMethods
@@ -350,7 +351,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             try
             {
                 response = responseMessage.Text;
-                resp = JsonConvert.DeserializeObject<WSBaseResp>(response);
+                resp = WsJson.Deserialize<WSBaseResp>(response);
             }
             catch (Exception e)
             {
@@ -463,7 +464,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             try
             {
                 var response = responseMessage.Text;
-                resp = JsonConvert.DeserializeObject<T>(response);
+                resp = WsJson.Deserialize<T>(response);
             }
             catch (Exception e)
             {
@@ -521,7 +522,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             try
             {
                 response = responseMessage.Text;
-                resp = JsonConvert.DeserializeObject<T2>(response);
+                resp = WsJson.Deserialize<T2>(response);
             }
             catch (Exception e)
             {
@@ -581,7 +582,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             try
             {
                 response = responseMessage.Text;
-                resp = JsonConvert.DeserializeObject<WSBaseResp>(response);
+                resp = WsJson.Deserialize<WSBaseResp>(response);
             }
             catch (Exception e)
             {
@@ -653,7 +654,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
         private static string SerializeJsonRequest<T>(string action, T req)
         {
-            return JsonConvert.SerializeObject(new WSActionReq<T>
+            return WsJson.Serialize(new WSActionReq<T>
             {
                 Action = action,
                 Args = req
@@ -1434,7 +1435,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     }
                     else if (RemoveIgnoredResponse(responseRequestId))
                     {
-                        var resp = JsonConvert.DeserializeObject<WSDispatchResp>(text);
+                        var resp = WsJson.Deserialize<WSDispatchResp>(text);
                         if (resp == null || resp.ReqId != responseRequestId)
                         {
                             throw new TDengineError((int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
@@ -1445,7 +1446,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     }
                     else
                     {
-                        var cleanupResponse = JsonConvert.DeserializeObject<WSDispatchResp>(text);
+                        var cleanupResponse = WsJson.Deserialize<WSDispatchResp>(text);
                         if (cleanupResponse != null && cleanupResponse.ReqId == responseRequestId &&
                             IsOneWayResponse(cleanupResponse.Action))
                         {
@@ -1541,31 +1542,34 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
         private static ulong ReadResponseRequestId(string text)
         {
-            using (var stringReader = new StringReader(text))
-            using (var reader = new JsonTextReader(stringReader) { DateParseHandling = DateParseHandling.None })
+            using (var document = JsonDocument.Parse(text, new JsonDocumentOptions
             {
-                if (!reader.Read() || reader.TokenType != JsonToken.StartObject)
-                    throw new JsonSerializationException("WebSocket response is not a JSON object.");
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip
+            }))
+            {
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                    throw new JsonException("WebSocket response is not a JSON object.");
 
-                while (reader.Read())
+                if (!root.TryGetProperty("req_id", out var requestIdElement))
+                    throw new JsonException("WebSocket response has no request id.");
+
+                if (requestIdElement.ValueKind == JsonValueKind.Number &&
+                    requestIdElement.TryGetUInt64(out var requestId))
                 {
-                    if (reader.TokenType == JsonToken.PropertyName && reader.Depth == 1 &&
-                        string.Equals((string)reader.Value, "req_id", StringComparison.Ordinal))
-                    {
-                        if (!reader.Read() ||
-                            (reader.TokenType != JsonToken.Integer && reader.TokenType != JsonToken.String) ||
-                            !ulong.TryParse(Convert.ToString(reader.Value, CultureInfo.InvariantCulture),
-                                NumberStyles.None, CultureInfo.InvariantCulture, out var requestId))
-                        {
-                            throw new JsonSerializationException("WebSocket response has an invalid request id.");
-                        }
-
-                        return requestId;
-                    }
+                    return requestId;
                 }
-            }
 
-            throw new JsonSerializationException("WebSocket response has no request id.");
+                if (requestIdElement.ValueKind == JsonValueKind.String &&
+                    ulong.TryParse(requestIdElement.GetString(), NumberStyles.None,
+                        CultureInfo.InvariantCulture, out requestId))
+                {
+                    return requestId;
+                }
+
+                throw new JsonException("WebSocket response has an invalid request id.");
+            }
         }
 
         private sealed class ReceivedMessage : IDisposable
@@ -1610,11 +1614,11 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
         private sealed class WSDispatchResp : WSBaseResp
         {
-            [JsonProperty("id")] public ulong ResultId { get; set; }
+            [JsonPropertyName("id")] public ulong ResultId { get; set; }
 
-            [JsonProperty("stmt_id")] public ulong StmtId { get; set; }
+            [JsonPropertyName("stmt_id")] public ulong StmtId { get; set; }
 
-            [JsonProperty("is_update")] public bool IsUpdate { get; set; }
+            [JsonPropertyName("is_update")] public bool IsUpdate { get; set; }
         }
 
         private enum LateResponseResourceKind

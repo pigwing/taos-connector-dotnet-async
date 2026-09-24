@@ -19,12 +19,13 @@ WebSocket 异步路径不需要安装本地 `taosc` 动态库，只要应用能�
 - 支持多地址 failover、自动重连、taosAdapter HA 发现、TLS、Bearer Token 和 WebSocket 压缩。
 - 补齐 typed getters，包括 `decimal` 和 `DateTimeOffset`。
 - 支持 `DECIMAL`、`DECIMAL64`、`VARBINARY`、`GEOMETRY`、`BLOB` 的读写。
-- 支持 `net45`、`net451`、`netstandard2.0`、`netstandard2.1`，以及 .NET 5 到 .NET 10。
+- 协议序列化使用 `System.Text.Json`，不依赖 Newtonsoft.Json。
+- 支持 `net461`、`netstandard2.0`、`netstandard2.1`，以及 .NET 5 到 .NET 10。
 
 ## 安装
 
 ```bash
-dotnet add package TDengine.Connector.Async --version 3.2.1.5
+dotnet add package TDengine.Connector.Async --version 3.2.1.7
 ```
 
 WebSocket 服务由 `taosAdapter` 提供，非 TLS 默认端口为 `6041`，实际部署也可以映射为其他端口。
@@ -408,11 +409,13 @@ catch (TDengineError ex)
 NuGet 包包含以下目标框架：
 
 ```text
-net45; net451; netstandard2.0; netstandard2.1;
-net5; net6; net7; net8; net9; net10.0
+net461; netstandard2.0; netstandard2.1;
+net5.0; net6.0; net7.0; net8.0; net9.0; net10.0
 ```
 
 WebSocket 压缩要求 .NET 6 或更高版本。`connectionTimezone` 同样要求 .NET 6+，并且必须使用 `Asia/Shanghai` 这类 IANA 时区 ID。
+
+版本 `3.2.1.7` 移除了原来的 `net45`/`net451` 目标，因为 `System.Text.Json` 要求 .NET Framework 4.6.1 或更高版本。请使用 `net461` 或更高目标框架。
 
 ## 项目范围与上游
 

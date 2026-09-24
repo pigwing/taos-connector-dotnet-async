@@ -19,12 +19,13 @@ The WebSocket async path does not require the local `taosc` native library. It i
 - Multi-address failover, automatic reconnect, adapter HA discovery, TLS, bearer token, and WebSocket compression.
 - Typed row getters, including `decimal` and `DateTimeOffset`.
 - `DECIMAL`, `DECIMAL64`, `VARBINARY`, `GEOMETRY`, and `BLOB` read/write support.
-- Targets `net45`, `net451`, `netstandard2.0`, `netstandard2.1`, and .NET 5 through .NET 10.
+- Uses `System.Text.Json` for protocol serialization and does not depend on Newtonsoft.Json.
+- Targets `net461`, `netstandard2.0`, `netstandard2.1`, and .NET 5 through .NET 10.
 
 ## Installation
 
 ```bash
-dotnet add package TDengine.Connector.Async --version 3.2.1.5
+dotnet add package TDengine.Connector.Async --version 3.2.1.7
 ```
 
 The WebSocket endpoint is provided by `taosAdapter`. Its default non-TLS port is `6041`; deployments may expose a different port.
@@ -408,11 +409,13 @@ When a debugger is configured to break on every thrown `WebSocketException`, it 
 The connector is built for:
 
 ```text
-net45; net451; netstandard2.0; netstandard2.1;
-net5; net6; net7; net8; net9; net10.0
+net461; netstandard2.0; netstandard2.1;
+net5.0; net6.0; net7.0; net8.0; net9.0; net10.0
 ```
 
 WebSocket compression requires .NET 6 or later. `connectionTimezone` also requires .NET 6 or later and an IANA timezone ID such as `Asia/Shanghai`.
+
+Version `3.2.1.7` removes the previous `net45`/`net451` targets because `System.Text.Json` requires .NET Framework 4.6.1 or later. Use `net461` or a newer target.
 
 ## Project Scope and Upstream
 
