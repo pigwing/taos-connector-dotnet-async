@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +19,8 @@ namespace TDengine.Driver.Client.Websocket
 
         private static readonly ConcurrentDictionary<string, PoolEntry> Pools =
             new ConcurrentDictionary<string, PoolEntry>(StringComparer.Ordinal);
+        private static readonly ConditionalWeakTable<ConnectionStringBuilder, PoolIdentityCache> Identities =
+            new ConditionalWeakTable<ConnectionStringBuilder, PoolIdentityCache>();
 
         private static readonly object MutationLock = new object();
         private static readonly WaitCallback DisposeEntriesCallback = DisposeEntriesInBackground;
@@ -33,8 +36,9 @@ namespace TDengine.Driver.Client.Websocket
                 throw new ArgumentException("WebSocket async pooling requires WebSocket protocol.", nameof(builder));
             }
 
-            var snapshot = builder.CreateSnapshot();
-            var key = BuildPoolKey(snapshot);
+            var identity = GetPoolIdentity(builder);
+            var snapshot = identity.Snapshot;
+            var key = identity.Key;
             TrimIfDue();
             while (true)
             {
@@ -70,7 +74,7 @@ namespace TDengine.Driver.Client.Websocket
         internal static WSClientAsyncPoolMetrics GetMetrics(ConnectionStringBuilder builder)
         {
             if (builder == null) throw new ArgumentNullException(nameof(builder));
-            var key = BuildPoolKey(builder.CreateSnapshot());
+            var key = GetPoolIdentity(builder).Key;
             if (!Pools.TryGetValue(key, out var entry) || !entry.TryEnter())
             {
                 return null;
@@ -423,6 +427,52 @@ namespace TDengine.Driver.Client.Websocket
                 hasher.Append("poolLeakDetectionThreshold", builder.PoolLeakDetectionThreshold);
                 return hasher.Complete();
             }
+        }
+
+        private static PoolIdentity GetPoolIdentity(ConnectionStringBuilder builder)
+        {
+            var cache = Identities.GetValue(builder, _ => new PoolIdentityCache());
+            lock (cache)
+            {
+                var connectionString = builder.ConnectionString;
+                var timezone = builder.Timezone;
+                var connectionTimezone = builder.ConnectionTimezone;
+                if (cache.Identity != null &&
+                    string.Equals(cache.ConnectionString, connectionString, StringComparison.Ordinal) &&
+                    ReferenceEquals(cache.Timezone, timezone) &&
+                    ReferenceEquals(cache.ConnectionTimezone, connectionTimezone))
+                {
+                    return cache.Identity;
+                }
+
+                var snapshot = builder.CreateSnapshot();
+                var identity = new PoolIdentity(BuildPoolKey(snapshot), snapshot);
+                cache.ConnectionString = connectionString;
+                cache.Timezone = timezone;
+                cache.ConnectionTimezone = connectionTimezone;
+                cache.Identity = identity;
+                return identity;
+            }
+        }
+
+        private sealed class PoolIdentityCache
+        {
+            internal string ConnectionString;
+            internal TimeZoneInfo Timezone;
+            internal TimeZoneInfo ConnectionTimezone;
+            internal PoolIdentity Identity;
+        }
+
+        private sealed class PoolIdentity
+        {
+            internal PoolIdentity(string key, ConnectionStringBuilder snapshot)
+            {
+                Key = key;
+                Snapshot = snapshot;
+            }
+
+            internal string Key { get; }
+            internal ConnectionStringBuilder Snapshot { get; }
         }
 
         internal sealed class PoolEntry

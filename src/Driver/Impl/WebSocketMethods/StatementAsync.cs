@@ -95,7 +95,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         {
             if (stmtId == 0) throw new ArgumentOutOfRangeException(nameof(stmtId));
             var reqId = _GetReqId();
-            await SendJsonAsync(WSAction.STMT2Close, new WSStmt2CloseReq
+            await SendCleanupAsync(WSAction.STMT2Close, new WSStmt2CloseReq
             {
                 ReqId = reqId,
                 StmtId = stmtId

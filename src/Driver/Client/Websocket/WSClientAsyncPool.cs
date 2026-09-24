@@ -537,6 +537,12 @@ namespace TDengine.Driver.Client.Websocket
 
         private bool TryAcquireIdleConnection(out PooledConnection connection)
         {
+            if (Volatile.Read(ref _idleConnections) <= 0)
+            {
+                connection = null;
+                return false;
+            }
+
             var cacheSlot = _threadCache.Value;
             connection = cacheSlot.GetTarget();
             if (TryActivateCachedConnection(connection))

@@ -13,6 +13,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Benchmark", "test\Benchmark
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Data.Tests", "test\Data.Tests\Data.Tests.csproj", "{5083B3FF-6C45-4A0B-ACDD-5573193FB627}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "WebSocketAsync.Stress", "test\WebSocketAsync.Stress\WebSocketAsync.Stress.csproj", "{B24C13A7-43B4-4BB1-9BEF-2323789DFE84}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -35,6 +37,10 @@ Global
 		{5083B3FF-6C45-4A0B-ACDD-5573193FB627}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5083B3FF-6C45-4A0B-ACDD-5573193FB627}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5083B3FF-6C45-4A0B-ACDD-5573193FB627}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B24C13A7-43B4-4BB1-9BEF-2323789DFE84}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B24C13A7-43B4-4BB1-9BEF-2323789DFE84}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B24C13A7-43B4-4BB1-9BEF-2323789DFE84}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B24C13A7-43B4-4BB1-9BEF-2323789DFE84}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -43,6 +49,7 @@ Global
 		{2EDACE6A-E4DF-466F-8E67-8F30C6A1A16C} = {AC08364F-B238-471D-8A2C-AF537BECD1A5}
 		{01D1D615-DB70-4FD1-BE81-CAC2E6365E21} = {AC08364F-B238-471D-8A2C-AF537BECD1A5}
 		{5083B3FF-6C45-4A0B-ACDD-5573193FB627} = {AC08364F-B238-471D-8A2C-AF537BECD1A5}
+		{B24C13A7-43B4-4BB1-9BEF-2323789DFE84} = {AC08364F-B238-471D-8A2C-AF537BECD1A5}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {00150F17-4325-4978-B1B3-10C6C84ADE91}

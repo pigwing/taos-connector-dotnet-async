@@ -23,6 +23,65 @@ namespace Driver.Test.Client.Query
     [Collection("WebSocket async collection")]
     public sealed class WebSocketAsyncOffline
     {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CleanupDoesNotRequireServerAcknowledgement(bool statement)
+        {
+            var cleanupReceived = NewCompletionSource<bool>();
+            await using var server = new LoopbackWebSocketServer(async (socket, _, token) =>
+            {
+                await CompleteConnectionHandshakeAsync(socket, token).ConfigureAwait(false);
+                var cleanup = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
+                var action = statement ? WSAction.STMT2Close : WSAction.FreeResult;
+                Assert.Equal(action, WebSocketTestProtocol.GetAction(cleanup));
+                cleanupReceived.TrySetResult(true);
+                var validation = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token)
+                    .ConfigureAwait(false);
+                await WebSocketTestProtocol.SendVersionResponseAsync(socket, validation, token)
+                    .ConfigureAwait(false);
+                await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
+            });
+
+            var connection = CreateConnection(server.Port);
+            await connection.ConnectAsync().ConfigureAwait(false);
+            var cleanupTask = statement ? connection.Stmt2CloseAsync(81) : connection.FreeResultAsync(81);
+            await cleanupReceived.Task.ConfigureAwait(false);
+            await cleanupTask.ConfigureAwait(false);
+            await connection.ValidateConnectionAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.True(connection.IsAvailable());
+            await connection.CloseAsync().ConfigureAwait(false);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CleanupErrorInvalidatesConnection(bool statement)
+        {
+            await using var server = new LoopbackWebSocketServer(async (socket, _, token) =>
+            {
+                await CompleteConnectionHandshakeAsync(socket, token).ConfigureAwait(false);
+                var cleanup = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
+                var action = statement ? WSAction.STMT2Close : WSAction.FreeResult;
+                Assert.Equal(action, WebSocketTestProtocol.GetAction(cleanup));
+                await WebSocketTestProtocol.SendErrorResponseAsync(socket, action,
+                    WebSocketTestProtocol.GetRequestId(cleanup), 0x321, "cleanup failed", token)
+                    .ConfigureAwait(false);
+                await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
+            });
+
+            var connection = CreateConnection(server.Port);
+            await connection.ConnectAsync().ConfigureAwait(false);
+            if (statement)
+                await connection.Stmt2CloseAsync(82).ConfigureAwait(false);
+            else
+                await connection.FreeResultAsync(82).ConfigureAwait(false);
+            for (var i = 0; i < 100 && connection.IsAvailable(); i++)
+                await Task.Delay(10).ConfigureAwait(false);
+            Assert.False(connection.IsAvailable());
+            await connection.CloseAsync().ConfigureAwait(false);
+        }
+
         [Fact]
         public async Task OutOfOrderResponsesAreDispatchedByRequestId()
         {
@@ -1430,11 +1489,11 @@ namespace Driver.Test.Client.Query
 
             var connection = CreateConnection(server.Port);
             await connection.ConnectAsync().ConfigureAwait(false);
-            var exception = await Assert.ThrowsAsync<TDengineWebSocketRequestException>(
+            var exception = await Assert.ThrowsAsync<TDengineError>(
                     () => connection.BinaryQueryAsync("select one_way_collision", 1101))
                 .ConfigureAwait(false);
 
-            AssertRootCauseIsUnexpectedMessage(exception);
+            Assert.Equal((int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE, exception.Code);
             Assert.False(connection.IsAvailable());
             await connection.CloseAsync().ConfigureAwait(false);
         }
@@ -1870,6 +1929,9 @@ namespace Driver.Test.Client.Query
                 var close = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSAction.STMT2Close, WebSocketTestProtocol.GetAction(close));
                 Assert.Equal(42UL, close["args"]?["stmt_id"]?.Value<ulong>());
+                await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Close,
+                    WebSocketTestProtocol.GetRequestId(close), new JObject(), false, token)
+                    .ConfigureAwait(false);
 
                 var query = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
                 var queryId = WebSocketTestProtocol.GetBinaryRequestId(query.Bytes);
@@ -1941,6 +2003,9 @@ namespace Driver.Test.Client.Query
                 var close = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 Assert.Equal(WSAction.STMT2Close, WebSocketTestProtocol.GetAction(close));
                 Assert.Equal(52UL, close["args"]?["stmt_id"]?.Value<ulong>());
+                await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Close,
+                    WebSocketTestProtocol.GetRequestId(close), new JObject(), false, token)
+                    .ConfigureAwait(false);
 
                 var query = await WebSocketTestProtocol.ReceiveAsync(socket, token).ConfigureAwait(false);
                 await SendUpdateResponseAsync(socket, WebSocketTestProtocol.GetBinaryRequestId(query.Bytes), 6,

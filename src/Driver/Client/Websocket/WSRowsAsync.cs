@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,6 +36,7 @@ namespace TDengine.Driver.Client.Websocket
         private int _currentRow;
         private int _blockSize;
         private byte[] _block;
+        private AsyncWsMessage _blockMessage;
         private bool _completed;
         private bool _hasCurrentRow;
         private int _readInProgress;
@@ -316,13 +318,18 @@ namespace TDengine.Driver.Client.Websocket
                     Trace.TraceWarning("WSRowsAsync timed out waiting for a pending fetch.");
                     invalidateConnection = true;
                     ObserveFetchCompletion(pendingFetch, true);
+                    ObserveAbandonedFetchResult(pendingFetch.Task, readCompletion);
                     pendingFetch = null;
                 }
                 else
                 {
                     try
                     {
-                        await pendingFetch.Task.ConfigureAwait(false);
+                        var response = await pendingFetch.Task.ConfigureAwait(false);
+                        if (readCompletion.IsCompleted)
+                            response?.Dispose();
+                        else
+                            ObserveAbandonedFetchResult(pendingFetch.Task, readCompletion);
                     }
                     catch (OperationCanceledException) when (pendingFetch.Token.IsCancellationRequested)
                     {
@@ -873,11 +880,8 @@ namespace TDengine.Driver.Client.Websocket
         {
             lock (_accessLock)
             {
-                _block = null;
-                _blockSize = 0;
-                _currentRow = 0;
+                ReleaseCurrentBlock();
                 _hasCurrentRow = false;
-                _blockReader?.ClearBlock();
             }
         }
 
@@ -910,10 +914,30 @@ namespace TDengine.Driver.Client.Websocket
                 TaskScheduler.Default);
         }
 
+        private static void ObserveAbandonedFetchResult(Task<AsyncWsMessage> task, Task readCompletion)
+        {
+            var cleanup = ReleaseAbandonedFetchResultAsync(task, readCompletion);
+            ObserveFaultedTask(cleanup);
+        }
+
+        private static async Task ReleaseAbandonedFetchResultAsync(Task<AsyncWsMessage> task,
+            Task readCompletion)
+        {
+            await readCompletion.ConfigureAwait(false);
+            try
+            {
+                (await task.ConfigureAwait(false))?.Dispose();
+            }
+            catch
+            {
+                // The fetch fault is observed by its FetchOperation.
+            }
+        }
+
         private async Task FetchBlockAsync(CancellationToken cancellationToken)
         {
             var fetchOperation = GetOrStartFetchOperation(cancellationToken);
-            byte[] fetchRawBlockResult;
+            AsyncWsMessage fetchRawBlockResult;
             try
             {
                 fetchRawBlockResult = await WaitWithCancellationAsync(fetchOperation.Task, cancellationToken,
@@ -942,10 +966,11 @@ namespace TDengine.Driver.Client.Websocket
             }
 
             ClearFetchOperation(fetchOperation, observeFault: false);
-            ThrowIfFreed();
+            var retained = false;
             try
             {
-                ApplyFetchBlock(fetchRawBlockResult);
+                ThrowIfFreed();
+                retained = ApplyFetchBlock(fetchRawBlockResult);
             }
             catch (TDengineError)
             {
@@ -957,6 +982,11 @@ namespace TDengine.Driver.Client.Websocket
                 ReleaseCurrentBlock();
                 await InvalidateConnectionAsync().ConfigureAwait(false);
                 throw;
+            }
+            finally
+            {
+                if (!retained)
+                    fetchRawBlockResult?.Dispose();
             }
         }
 
@@ -991,11 +1021,11 @@ namespace TDengine.Driver.Client.Websocket
             }
         }
 
-        private Task<byte[]> FetchRawBlockAsync(CancellationToken cancellationToken)
+        private Task<AsyncWsMessage> FetchRawBlockAsync(CancellationToken cancellationToken)
         {
             if (_fetchRawBlockAsync != null)
             {
-                return _fetchRawBlockAsync(_resultId, cancellationToken);
+                return WrapFetchRawBlockAsync(_fetchRawBlockAsync(_resultId, cancellationToken));
             }
 
             if (_connection == null)
@@ -1003,7 +1033,16 @@ namespace TDengine.Driver.Client.Websocket
                 throw new InvalidOperationException("This rows object does not have a WebSocket connection.");
             }
 
-            return _connection.FetchRawBlockBinaryAsync(_resultId, cancellationToken);
+            return _connection.FetchRawBlockBinaryOwnedAsync(_resultId, cancellationToken);
+        }
+
+        private static async Task<AsyncWsMessage> WrapFetchRawBlockAsync(Task<byte[]> fetchTask)
+        {
+            if (fetchTask == null)
+                throw new InvalidOperationException("The fetch delegate returned a null task.");
+            var bytes = await fetchTask.ConfigureAwait(false);
+            return bytes == null ? null : new AsyncWsMessage(bytes, bytes.Length,
+                WebSocketMessageType.Binary, false);
         }
 
         private void MarkFetchOutcomeUnknown(Exception exception)
@@ -1128,7 +1167,7 @@ namespace TDengine.Driver.Client.Websocket
             private int _cancellationSourceDisposed;
             private int _observationStarted;
 
-            internal FetchOperation(Task<byte[]> task, CancellationTokenSource cancellationSource,
+            internal FetchOperation(Task<AsyncWsMessage> task, CancellationTokenSource cancellationSource,
                 CancellationToken token)
             {
                 Task = task;
@@ -1136,7 +1175,7 @@ namespace TDengine.Driver.Client.Websocket
                 Token = token;
             }
 
-            internal Task<byte[]> Task { get; }
+            internal Task<AsyncWsMessage> Task { get; }
 
             internal CancellationToken Token { get; }
 
@@ -1187,9 +1226,11 @@ namespace TDengine.Driver.Client.Websocket
             internal bool AssumeOutcomeUnknown { get; }
         }
 
-        private void ApplyFetchBlock(byte[] fetchRawBlockResult)
+        private bool ApplyFetchBlock(AsyncWsMessage responseMessage)
         {
-            ValidateFetchBlockLength(fetchRawBlockResult, 42, "header");
+            var fetchRawBlockResult = responseMessage?.Message;
+            var validLength = responseMessage?.MessageLength ?? 0;
+            ValidateFetchBlockLength(fetchRawBlockResult, validLength, 42, "header");
             var version = ReadUInt16(fetchRawBlockResult, 16);
             if (version != 1)
                 throw new InvalidDataException("Unsupported fetch raw block version " + version);
@@ -1201,7 +1242,7 @@ namespace TDengine.Driver.Client.Websocket
 
             var messageOffset = 42;
             var messageEndOffset = (long)messageOffset + messageLen;
-            ValidateFetchBlockLength(fetchRawBlockResult, messageEndOffset, "message");
+            ValidateFetchBlockLength(fetchRawBlockResult, validLength, messageEndOffset, "message");
             if (messageEndOffset > int.MaxValue)
                 throw new InvalidDataException("Invalid fetch raw block message length");
             if (code != 0)
@@ -1216,7 +1257,7 @@ namespace TDengine.Driver.Client.Websocket
             }
 
             var resultIdOffset = messageEndOffset;
-            ValidateFetchBlockLength(fetchRawBlockResult, resultIdOffset + sizeof(ulong), "result id");
+            ValidateFetchBlockLength(fetchRawBlockResult, validLength, resultIdOffset + sizeof(ulong), "result id");
             if (resultIdOffset > int.MaxValue ||
                 ReadUInt64(fetchRawBlockResult, (int)resultIdOffset) != _resultId)
             {
@@ -1224,7 +1265,7 @@ namespace TDengine.Driver.Client.Websocket
             }
 
             var completedOffset = resultIdOffset + sizeof(ulong);
-            ValidateFetchBlockLength(fetchRawBlockResult, completedOffset + 1, "completed flag");
+            ValidateFetchBlockLength(fetchRawBlockResult, validLength, completedOffset + 1, "completed flag");
             if (completedOffset > int.MaxValue)
                 throw new InvalidDataException("Invalid fetch raw block completed flag offset");
             var completedValue = fetchRawBlockResult[(int)completedOffset];
@@ -1236,23 +1277,24 @@ namespace TDengine.Driver.Client.Websocket
             _completed = completedValue == 1;
             if (_completed)
             {
-                if (fetchRawBlockResult.Length != completedOffset + 1)
+                if (validLength != completedOffset + 1)
                 {
                     throw new InvalidDataException("Invalid completed fetch raw block result length");
                 }
 
                 _hasCurrentRow = false;
                 ReleaseCurrentBlock();
-                return;
+                return false;
             }
 
             var rawBlockLengthOffset = completedOffset + 1;
-            ValidateFetchBlockLength(fetchRawBlockResult, rawBlockLengthOffset + sizeof(uint), "raw block length");
+            ValidateFetchBlockLength(fetchRawBlockResult, validLength,
+                rawBlockLengthOffset + sizeof(uint), "raw block length");
             if (rawBlockLengthOffset > int.MaxValue)
                 throw new InvalidDataException("Invalid fetch raw block length offset");
             var rawBlockLength = ReadUInt32(fetchRawBlockResult, (int)rawBlockLengthOffset);
             var expectedLength = (long)rawBlockLengthOffset + sizeof(uint) + rawBlockLength;
-            if (expectedLength > int.MaxValue || fetchRawBlockResult.Length != expectedLength)
+            if (expectedLength > int.MaxValue || validLength != expectedLength)
                 throw new InvalidDataException("Invalid fetch raw block result length");
 
             _block = fetchRawBlockResult;
@@ -1263,8 +1305,10 @@ namespace TDengine.Driver.Client.Websocket
                 throw new InvalidDataException("A non-completed fetch response contains no rows.");
             }
 
+            _blockMessage = responseMessage;
             _currentRow = 0;
             _hasCurrentRow = true;
+            return true;
         }
 
         private void ReleaseCurrentBlock()
@@ -1273,11 +1317,16 @@ namespace TDengine.Driver.Client.Websocket
             _blockSize = 0;
             _currentRow = 0;
             _blockReader?.ClearBlock();
+            var oldMessage = _blockMessage;
+            _blockMessage = null;
+            oldMessage?.Dispose();
         }
 
-        private static void ValidateFetchBlockLength(byte[] bytes, long requiredLength, string segment)
+        private static void ValidateFetchBlockLength(byte[] bytes, int validLength, long requiredLength,
+            string segment)
         {
-            if (bytes == null || requiredLength > int.MaxValue || bytes.Length < requiredLength)
+            if (bytes == null || validLength < 0 || validLength > bytes.Length ||
+                requiredLength > int.MaxValue || validLength < requiredLength)
             {
                 throw new InvalidDataException($"Invalid fetch raw block {segment} length");
             }

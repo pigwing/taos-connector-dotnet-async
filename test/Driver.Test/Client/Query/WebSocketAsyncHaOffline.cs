@@ -205,7 +205,7 @@ namespace Driver.Test.Client.Query
         {
             return new ConnectionStringBuilder(
                 $"protocol=WebSocket;host=127.0.0.1;port={port};username=root;password=taosdata;" +
-                $"adapterHA={adapterHa.ToString().ToLowerInvariant()};connTimeout=00:00:01;" +
+                $"adapterHA={adapterHa.ToString().ToLowerInvariant()};connTimeout=00:00:03;" +
                 "readTimeout=00:00:03;writeTimeout=00:00:02");
         }
 

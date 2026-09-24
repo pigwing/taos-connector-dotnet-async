@@ -117,6 +117,20 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         public async Task<byte[]> FetchRawBlockBinaryAsync(ulong resultId,
             CancellationToken cancellationToken = default)
         {
+            var response = await FetchRawBlockBinaryOwnedAsync(resultId, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return response.CopyExactBytes();
+            }
+            finally
+            {
+                response.Dispose();
+            }
+        }
+
+        internal async Task<AsyncWsMessage> FetchRawBlockBinaryOwnedAsync(ulong resultId,
+            CancellationToken cancellationToken = default)
+        {
             if (resultId == 0) throw new ArgumentOutOfRangeException(nameof(resultId));
             const int requestLength = 32;
             var req = ArrayPool<byte>.Shared.Rent(requestLength);
@@ -129,7 +143,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 WriteUInt64ToBytes(req, WSActionBinary.FetchRawBlockMessage, 16);
                 WriteUInt64ToBytes(req, 1, 24);
                 ownershipTransferred = true;
-                return await SendPooledBinaryBackBytesAsync(req, requestLength, reqId, cancellationToken)
+                return await SendPooledBinaryBackOwnedBytesAsync(req, requestLength, reqId, cancellationToken)
                     .ConfigureAwait(false);
             }
             finally
@@ -145,7 +159,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         {
             if (resultId == 0) throw new ArgumentOutOfRangeException(nameof(resultId));
             var reqId = _GetReqId();
-            await SendJsonAsync(WSAction.FreeResult, new WSFreeResultReq
+            await SendCleanupAsync(WSAction.FreeResult, new WSFreeResultReq
             {
                 ReqId = reqId,
                 ResultId = resultId

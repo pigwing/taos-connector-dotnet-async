@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Net.WebSockets;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using TDengine.Driver;
@@ -61,6 +62,48 @@ namespace Driver.Test.Client.Query
 
             Assert.Equal(WSClientAsyncPoolRegistry.BuildPoolKey(first),
                 WSClientAsyncPoolRegistry.BuildPoolKey(second));
+        }
+
+        [Fact]
+        public void CachedPoolIdentityTracksBuilderMutations()
+        {
+            var builder = new ConnectionStringBuilder(
+                "protocol=WebSocket;host=localhost;port=6041;password=first;pooling=true");
+            var first = GetCachedPoolIdentity(builder);
+            Assert.Same(first, GetCachedPoolIdentity(builder));
+
+            builder.Password = "second";
+            var second = GetCachedPoolIdentity(builder);
+            Assert.NotEqual(GetIdentityKey(first), GetIdentityKey(second));
+            Assert.Equal("first", GetIdentitySnapshot(first).Password);
+            Assert.Equal("second", GetIdentitySnapshot(second).Password);
+
+            var zone = TimeZoneInfo.CreateCustomTimeZone("pool-cache-zone", TimeSpan.FromHours(3),
+                "pool-cache-zone", "pool-cache-zone");
+            builder.Timezone = zone;
+            var third = GetCachedPoolIdentity(builder);
+            Assert.NotEqual(GetIdentityKey(second), GetIdentityKey(third));
+            Assert.Same(third, GetCachedPoolIdentity(builder));
+        }
+
+        private static object GetCachedPoolIdentity(ConnectionStringBuilder builder)
+        {
+            var method = typeof(WSClientAsyncPoolRegistry).GetMethod("GetPoolIdentity",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(method);
+            return method!.Invoke(null, new object[] { builder })!;
+        }
+
+        private static string GetIdentityKey(object identity)
+        {
+            return (string)identity.GetType().GetProperty("Key",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(identity)!;
+        }
+
+        private static ConnectionStringBuilder GetIdentitySnapshot(object identity)
+        {
+            return (ConnectionStringBuilder)identity.GetType().GetProperty("Snapshot",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(identity)!;
         }
 
         [Fact]

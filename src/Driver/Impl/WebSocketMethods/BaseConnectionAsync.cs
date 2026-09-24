@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
@@ -20,8 +21,8 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         private readonly TimeSpan _connTimeout;
         private readonly string _addr;
         private readonly string _safeAddr;
-        private readonly ConcurrentDictionary<ulong, TaskCompletionSource<WsMessage>> _pendingRequests =
-            new ConcurrentDictionary<ulong, TaskCompletionSource<WsMessage>>();
+        private readonly ConcurrentDictionary<ulong, TaskCompletionSource<AsyncWsMessage>> _pendingRequests =
+            new ConcurrentDictionary<ulong, TaskCompletionSource<AsyncWsMessage>>();
         private readonly Dictionary<ulong, LinkedListNode<ulong>> _ignoredResponseIds =
             new Dictionary<ulong, LinkedListNode<ulong>>();
         private readonly LinkedList<ulong> _ignoredResponseOrder = new LinkedList<ulong>();
@@ -293,15 +294,50 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         private async Task<byte[]> SendBinaryBackBytesCoreAsync(byte[] request, int requestLength, ulong reqId,
             bool returnToPool, CancellationToken cancellationToken)
         {
+            var response = await SendBinaryBackMessageCoreAsync(request, requestLength, reqId, returnToPool,
+                    cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return response.CopyExactBytes();
+            }
+            finally
+            {
+                response.Dispose();
+            }
+        }
+
+        internal Task<AsyncWsMessage> SendPooledBinaryBackOwnedBytesAsync(byte[] request, int requestLength,
+            ulong reqId, CancellationToken cancellationToken)
+        {
+            if (request == null) throw new ArgumentNullException(nameof(request));
+            if (requestLength < 0 || requestLength > request.Length)
+                throw new ArgumentOutOfRangeException(nameof(requestLength));
+            return SendBinaryBackMessageCoreAsync(request, requestLength, reqId, true, cancellationToken);
+        }
+
+        private async Task<AsyncWsMessage> SendBinaryBackMessageCoreAsync(byte[] request, int requestLength,
+            ulong reqId, bool returnToPool, CancellationToken cancellationToken)
+        {
             var responseMessage = await SendBinaryAndWaitAsync(request, requestLength, reqId, returnToPool,
                     cancellationToken)
                 .ConfigureAwait(false);
 
             if (responseMessage != null && responseMessage.MessageType == WebSocketMessageType.Binary)
             {
-                ValidateBinaryResponseRequestId(responseMessage.Message, reqId, "binary response");
-                return responseMessage.Message;
+                try
+                {
+                    ValidateBinaryResponseRequestId(responseMessage.Message, responseMessage.MessageLength,
+                        reqId, "binary response");
+                    return responseMessage;
+                }
+                catch
+                {
+                    responseMessage.Dispose();
+                    throw;
+                }
             }
+
+            responseMessage?.Dispose();
 
             if (responseMessage == null || responseMessage.MessageType != WebSocketMessageType.Text)
             {
@@ -313,7 +349,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             string response = null;
             try
             {
-                response = Utf8Encoding.GetString(responseMessage.Message);
+                response = responseMessage.Text;
                 resp = JsonConvert.DeserializeObject<WSBaseResp>(response);
             }
             catch (Exception e)
@@ -415,6 +451,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             var responseMessage = await SendBinaryAndWaitAsync(request, requestLength, reqId, returnToPool,
                     cancellationToken)
                 .ConfigureAwait(false);
+            responseMessage?.Dispose();
 
             if (responseMessage == null || responseMessage.MessageType != WebSocketMessageType.Text)
             {
@@ -425,7 +462,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             T resp;
             try
             {
-                var response = Utf8Encoding.GetString(responseMessage.Message);
+                var response = responseMessage.Text;
                 resp = JsonConvert.DeserializeObject<T>(response);
             }
             catch (Exception e)
@@ -471,6 +508,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             var request = SerializeJsonRequest(action, req);
             var responseMessage = await SendTextAndWaitAsync(request, reqId, cancellationToken)
                 .ConfigureAwait(false);
+            responseMessage?.Dispose();
 
             if (responseMessage == null || responseMessage.MessageType != WebSocketMessageType.Text)
             {
@@ -482,7 +520,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             string response = null;
             try
             {
-                response = Utf8Encoding.GetString(responseMessage.Message);
+                response = responseMessage.Text;
                 resp = JsonConvert.DeserializeObject<T2>(response);
             }
             catch (Exception e)
@@ -518,9 +556,19 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
             if (responseMessage != null && responseMessage.MessageType == WebSocketMessageType.Binary)
             {
-                ValidateBinaryResponseRequestId(responseMessage.Message, reqId, "json binary response");
-                return responseMessage.Message;
+                try
+                {
+                    ValidateBinaryResponseRequestId(responseMessage.Message, responseMessage.MessageLength,
+                        reqId, "json binary response");
+                    return responseMessage.CopyExactBytes();
+                }
+                finally
+                {
+                    responseMessage.Dispose();
+                }
             }
+
+            responseMessage?.Dispose();
 
             if (responseMessage == null || responseMessage.MessageType != WebSocketMessageType.Text)
             {
@@ -532,7 +580,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             string response = null;
             try
             {
-                response = Utf8Encoding.GetString(responseMessage.Message);
+                response = responseMessage.Text;
                 resp = JsonConvert.DeserializeObject<WSBaseResp>(response);
             }
             catch (Exception e)
@@ -563,43 +611,43 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             throw new TDengineError(resp.Code, resp.Message);
         }
 
-        private static string DescribeMessage(ulong reqId, WsMessage message)
+        private static string DescribeMessage(ulong reqId, AsyncWsMessage message)
         {
             return DescribeMessage(null, reqId, message);
         }
 
-        private static string DescribeMessage(string action, ulong reqId, WsMessage message)
+        private static string DescribeMessage(string action, ulong reqId, AsyncWsMessage message)
         {
             var actionPart = string.IsNullOrEmpty(action) ? string.Empty : "action:" + action + ",";
-            var length = message == null || message.Message == null ? 0 : message.Message.Length;
+            var length = message == null ? 0 : message.MessageLength;
             var messageType = message == null ? WebSocketMessageType.Close : message.MessageType;
             return $"{actionPart}reqId:0x{reqId:x},messageType:{messageType},length:{length}";
         }
 
-        protected async Task SendJsonAsync<T>(string action, T req, ulong reqId,
+        protected async Task SendCleanupAsync<T>(string action, T req, ulong reqId,
             CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var request = SerializeJsonRequest(action, req);
-            if (!IsOneWayResponse(action) && !TryMarkIgnoredResponse(reqId))
+            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                var error = CreateIgnoredResponseLimitError();
-                DoClose(error);
-                throw CreateRequestException(reqId, false, error);
-            }
-
-            try
-            {
-                await SendTextMessageAsync(request, reqId, cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                if (!IsOneWayResponse(action))
+                linkedCts.CancelAfter(CloseTimeout);
+                try
                 {
-                    RemoveIgnoredResponse(reqId);
+                    await SendTextMessageAsync(SerializeJsonRequest(action, req), reqId, linkedCts.Token)
+                        .ConfigureAwait(false);
                 }
+                catch (Exception e)
+                {
+                    try
+                    {
+                        await InvalidateAsync(e).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Keep the cleanup failure as the primary exception.
+                    }
 
-                throw;
+                    throw;
+                }
             }
         }
 
@@ -630,10 +678,10 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
         }
 
-        private void ValidateBinaryResponseRequestId(byte[] response, ulong expectedRequestId,
+        private void ValidateBinaryResponseRequestId(byte[] response, int responseLength, ulong expectedRequestId,
             string operation)
         {
-            if (response == null || response.Length < 16)
+            if (response == null || responseLength < 16)
             {
                 throw CloseForUnexpectedMessage($"{operation} is too short");
             }
@@ -642,7 +690,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             var requestId = ReadUInt64FromBytes(response, 8);
             if (flag == 0xffffffffffffffff)
             {
-                if (response.Length < 34)
+                if (responseLength < 34)
                 {
                     throw CloseForUnexpectedMessage($"{operation} raw block header is too short");
                 }
@@ -656,7 +704,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
         }
 
-        private TaskCompletionSource<WsMessage> AddTask(ulong reqId)
+        private TaskCompletionSource<AsyncWsMessage> AddTask(ulong reqId)
         {
             lock (_exitLock)
             {
@@ -690,7 +738,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
         }
 
-        private bool TryRemoveTask(ulong reqId, out TaskCompletionSource<WsMessage> tcs)
+        private bool TryRemoveTask(ulong reqId, out TaskCompletionSource<AsyncWsMessage> tcs)
         {
             lock (_exitLock)
             {
@@ -701,26 +749,6 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
                 _pendingRequestCount--;
                 return true;
-            }
-        }
-
-        private bool TryMarkIgnoredResponse(ulong reqId)
-        {
-            lock (_exitLock)
-            {
-                if (_exit)
-                {
-                    throw CreateRequestException(reqId, false,
-                        new TDengineError((int)TDengineError.InternalErrorCode.WS_CONNECTION_CLOSED,
-                            "websocket connection is closed"));
-                }
-
-                if (_pendingRequests.ContainsKey(reqId) || _ignoredResponseIds.ContainsKey(reqId))
-                {
-                    throw new InvalidOperationException($"Request with reqId '0x{reqId:x}' already exists.");
-                }
-
-                return AddIgnoredResponseUnsafe(reqId);
             }
         }
 
@@ -758,7 +786,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
         }
 
-        private bool TryCancelPendingRequest(ulong reqId, out TaskCompletionSource<WsMessage> tcs)
+        private bool TryCancelPendingRequest(ulong reqId, out TaskCompletionSource<AsyncWsMessage> tcs)
         {
             var closeConnection = false;
             lock (_exitLock)
@@ -806,19 +834,20 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
         }
 
-        private static TaskCompletionSource<WsMessage> CreateTaskCompletionSource()
+        private static TaskCompletionSource<AsyncWsMessage> CreateTaskCompletionSource()
         {
 #if NET5_0_OR_GREATER || NETSTANDARD2_0_OR_GREATER
-            return new TaskCompletionSource<WsMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return new TaskCompletionSource<AsyncWsMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 #else
-            return new TaskCompletionSource<WsMessage>();
+            return new TaskCompletionSource<AsyncWsMessage>();
 #endif
         }
 
-        private async Task<WsMessage> SendTextAndWaitAsync(string request, ulong reqId,
+        private async Task<AsyncWsMessage> SendTextAndWaitAsync(string request, ulong reqId,
             CancellationToken cancellationToken)
         {
             var tcs = AddTask(reqId);
+            var responseClaimed = false;
             try
             {
                 try
@@ -831,19 +860,24 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     throw;
                 }
 
-                return await WaitForResponseAsync(reqId, tcs, cancellationToken).ConfigureAwait(false);
+                var response = await WaitForResponseAsync(reqId, tcs, cancellationToken).ConfigureAwait(false);
+                responseClaimed = true;
+                return response;
             }
             finally
             {
                 TryRemoveTask(reqId, out _);
+                if (!responseClaimed)
+                    DisposeAbandonedResponse(tcs.Task);
             }
         }
 
-        private async Task<WsMessage> SendBinaryAndWaitAsync(byte[] request, int requestLength, ulong reqId,
+        private async Task<AsyncWsMessage> SendBinaryAndWaitAsync(byte[] request, int requestLength, ulong reqId,
             bool returnToPool, CancellationToken cancellationToken)
         {
-            TaskCompletionSource<WsMessage> tcs = null;
+            TaskCompletionSource<AsyncWsMessage> tcs = null;
             var bufferReturned = false;
+            var responseClaimed = false;
             try
             {
                 tcs = AddTask(reqId);
@@ -869,7 +903,9 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     }
                 }
 
-                return await WaitForResponseAsync(reqId, tcs, cancellationToken).ConfigureAwait(false);
+                var response = await WaitForResponseAsync(reqId, tcs, cancellationToken).ConfigureAwait(false);
+                responseClaimed = true;
+                return response;
             }
             finally
             {
@@ -881,11 +917,20 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 if (tcs != null)
                 {
                     TryRemoveTask(reqId, out _);
+                    if (!responseClaimed)
+                        DisposeAbandonedResponse(tcs.Task);
                 }
             }
         }
 
-        private async Task<WsMessage> WaitForResponseAsync(ulong reqId, TaskCompletionSource<WsMessage> tcs,
+        private static void DisposeAbandonedResponse(Task<AsyncWsMessage> responseTask)
+        {
+            responseTask.ContinueWith(completed => completed.Result?.Dispose(), CancellationToken.None,
+                TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private async Task<AsyncWsMessage> WaitForResponseAsync(ulong reqId, TaskCompletionSource<AsyncWsMessage> tcs,
             CancellationToken cancellationToken)
         {
             if (!TryEnterCloseOperation())
@@ -1160,7 +1205,14 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                         break;
                     }
 
-                    DispatchResponse(message.Bytes, message.MessageType);
+                    try
+                    {
+                        DispatchResponse(message);
+                    }
+                    finally
+                    {
+                        message.Dispose();
+                    }
                 }
             }
             catch (OperationCanceledException) when (_closeToken.IsCancellationRequested)
@@ -1190,13 +1242,13 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             var result = await ReceiveFrameAsync(buffer).ConfigureAwait(false);
             if (result.MessageType == WebSocketMessageType.Close)
             {
-                return new ReceivedMessage(null, WebSocketMessageType.Close);
+                return new ReceivedMessage(null, 0, WebSocketMessageType.Close, false);
             }
 
             if (result.EndOfMessage)
             {
                 return new ReceivedMessage(CopyMessage(buffer, result.Count,
-                    GetMaximumIncomingMessageSize(result.MessageType)), result.MessageType);
+                    GetMaximumIncomingMessageSize(result.MessageType)), result.Count, result.MessageType, false);
             }
 
             var messageType = result.MessageType;
@@ -1213,7 +1265,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     result = await ReceiveFrameAsync(buffer).ConfigureAwait(false);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        return new ReceivedMessage(null, WebSocketMessageType.Close);
+                        return new ReceivedMessage(null, 0, WebSocketMessageType.Close, false);
                     }
 
                     if (result.MessageType != messageType)
@@ -1225,8 +1277,9 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                     AppendFrame(buffer, result.Count, ref messageBuffer, ref messageLength, maximumMessageSize);
                 } while (!result.EndOfMessage);
 
-                return new ReceivedMessage(CopyMessage(messageBuffer, messageLength, maximumMessageSize),
-                    messageType);
+                var completed = new ReceivedMessage(messageBuffer, messageLength, messageType, true);
+                messageBuffer = null;
+                return completed;
             }
             finally
             {
@@ -1319,26 +1372,27 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             return false;
         }
 
-        private void DispatchResponse(byte[] bytes, WebSocketMessageType messageType)
+        private void DispatchResponse(ReceivedMessage message)
         {
-            TaskCompletionSource<WsMessage> tcs;
-            switch (messageType)
+            TaskCompletionSource<AsyncWsMessage> tcs;
+            var bytes = message.Bytes;
+            switch (message.MessageType)
             {
                 case WebSocketMessageType.Binary:
-                    if (bytes.Length < 16)
+                    if (message.Length < 16)
                     {
                         throw new TDengineError((int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
-                            $"binary message length is less than 16, length:{bytes.Length}");
+                            $"binary message length is less than 16, length:{message.Length}");
                     }
 
                     var flag = ReadUInt64FromBytes(bytes, 0);
                     var reqId = ReadUInt64FromBytes(bytes, 8);
                     if (flag == 0xffffffffffffffff)
                     {
-                        if (bytes.Length < 34)
+                        if (message.Length < 34)
                         {
                             throw new TDengineError((int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
-                                $"binary raw block message length is less than 34, length:{bytes.Length}");
+                                $"binary raw block message length is less than 34, length:{message.Length}");
                         }
 
                         reqId = ReadUInt64FromBytes(bytes, 26);
@@ -1346,7 +1400,11 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
                     if (TryRemoveTask(reqId, out tcs))
                     {
-                        tcs.TrySetResult(new WsMessage(bytes, messageType, null));
+                        var response = message.TransferBinary();
+                        if (!tcs.TrySetResult(response))
+                        {
+                            response.Dispose();
+                        }
                     }
                     else if (!RemoveIgnoredResponse(reqId))
                     {
@@ -1357,10 +1415,12 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
                     break;
                 case WebSocketMessageType.Text:
-                    WSDispatchResp resp;
+                    string text;
+                    ulong responseRequestId;
                     try
                     {
-                        resp = JsonConvert.DeserializeObject<WSDispatchResp>(Utf8Encoding.GetString(bytes));
+                        text = Utf8Encoding.GetString(bytes, 0, message.Length);
+                        responseRequestId = ReadResponseRequestId(text);
                     }
                     catch (Exception e)
                     {
@@ -1368,38 +1428,36 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                             "receive unexpected message", e.Message);
                     }
 
-                    if (resp == null)
+                    if (TryRemoveTask(responseRequestId, out tcs))
                     {
-                        throw new TDengineError((int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
-                            "receive empty json message");
+                        tcs.TrySetResult(new AsyncWsMessage(text, message.Length));
                     }
-
-                    if (IsOneWayResponse(resp.Action))
+                    else if (RemoveIgnoredResponse(responseRequestId))
                     {
-                        if (IsRequestIdTracked(resp.ReqId))
+                        var resp = JsonConvert.DeserializeObject<WSDispatchResp>(text);
+                        if (resp == null || resp.ReqId != responseRequestId)
                         {
-                            throw new TDengineError(
-                                (int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
-                                $"receive cleanup response for a tracked request id 0x{resp.ReqId:x}");
+                            throw new TDengineError((int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
+                                "receive invalid late response");
                         }
 
-                        RemoveIgnoredResponse(resp.ReqId);
-                        break;
-                    }
-
-                    if (TryRemoveTask(resp.ReqId, out tcs))
-                    {
-                        tcs.TrySetResult(new WsMessage(bytes, messageType, null));
-                    }
-                    else if (RemoveIgnoredResponse(resp.ReqId))
-                    {
                         ScheduleLateResponseCleanup(resp);
                     }
                     else
                     {
+                        var cleanupResponse = JsonConvert.DeserializeObject<WSDispatchResp>(text);
+                        if (cleanupResponse != null && cleanupResponse.ReqId == responseRequestId &&
+                            IsOneWayResponse(cleanupResponse.Action))
+                        {
+                            if (cleanupResponse.Code != 0)
+                                throw new TDengineError((int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
+                                    "server rejected a websocket resource cleanup request");
+                            break;
+                        }
+
                         throw new TDengineError(
                             (int)TDengineError.InternalErrorCode.WS_UNEXPECTED_MESSAGE,
-                            $"receive text response for unknown request id 0x{resp.ReqId:x}");
+                            $"receive text response for unknown request id 0x{responseRequestId:x}");
                     }
 
                     break;
@@ -1457,7 +1515,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 var reqId = _GetReqId();
                 if (resourceKind == LateResponseResourceKind.Result)
                 {
-                    await SendJsonAsync(WSAction.FreeResult, new WSFreeResultReq
+                    await SendCleanupAsync(WSAction.FreeResult, new WSFreeResultReq
                     {
                         ReqId = reqId,
                         ResultId = resourceId
@@ -1465,7 +1523,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
                 }
                 else
                 {
-                    await SendJsonAsync(WSAction.STMT2Close, new WSStmt2CloseReq
+                    await SendCleanupAsync(WSAction.STMT2Close, new WSStmt2CloseReq
                     {
                         ReqId = reqId,
                         StmtId = resourceId
@@ -1481,17 +1539,73 @@ namespace TDengine.Driver.Impl.WebSocketMethods
             }
         }
 
-        private struct ReceivedMessage
+        private static ulong ReadResponseRequestId(string text)
         {
-            public ReceivedMessage(byte[] bytes, WebSocketMessageType messageType)
+            using (var stringReader = new StringReader(text))
+            using (var reader = new JsonTextReader(stringReader) { DateParseHandling = DateParseHandling.None })
             {
-                Bytes = bytes;
-                MessageType = messageType;
+                if (!reader.Read() || reader.TokenType != JsonToken.StartObject)
+                    throw new JsonSerializationException("WebSocket response is not a JSON object.");
+
+                while (reader.Read())
+                {
+                    if (reader.TokenType == JsonToken.PropertyName && reader.Depth == 1 &&
+                        string.Equals((string)reader.Value, "req_id", StringComparison.Ordinal))
+                    {
+                        if (!reader.Read() ||
+                            (reader.TokenType != JsonToken.Integer && reader.TokenType != JsonToken.String) ||
+                            !ulong.TryParse(Convert.ToString(reader.Value, CultureInfo.InvariantCulture),
+                                NumberStyles.None, CultureInfo.InvariantCulture, out var requestId))
+                        {
+                            throw new JsonSerializationException("WebSocket response has an invalid request id.");
+                        }
+
+                        return requestId;
+                    }
+                }
             }
 
-            public byte[] Bytes { get; }
+            throw new JsonSerializationException("WebSocket response has no request id.");
+        }
+
+        private sealed class ReceivedMessage : IDisposable
+        {
+            private byte[] _bytes;
+            private bool _pooled;
+
+            public ReceivedMessage(byte[] bytes, int length, WebSocketMessageType messageType, bool pooled)
+            {
+                _bytes = bytes;
+                Length = length;
+                MessageType = messageType;
+                _pooled = pooled;
+            }
+
+            public byte[] Bytes => _bytes;
+
+            public int Length { get; }
 
             public WebSocketMessageType MessageType { get; }
+
+            public AsyncWsMessage TransferBinary()
+            {
+                var bytes = _bytes;
+                if (bytes == null)
+                    throw new InvalidOperationException("The WebSocket message was already transferred.");
+                var pooled = _pooled;
+                var result = new AsyncWsMessage(bytes, Length, MessageType, pooled);
+                _bytes = null;
+                _pooled = false;
+                return result;
+            }
+
+            public void Dispose()
+            {
+                if (_pooled && _bytes != null)
+                    ReturnPooledBuffer(_bytes, Length);
+                _bytes = null;
+                _pooled = false;
+            }
         }
 
         private sealed class WSDispatchResp : WSBaseResp
@@ -1513,14 +1627,6 @@ namespace TDengine.Driver.Impl.WebSocketMethods
         {
             return string.Equals(action, WSAction.FreeResult, StringComparison.Ordinal) ||
                    string.Equals(action, WSAction.STMT2Close, StringComparison.Ordinal);
-        }
-
-        private bool IsRequestIdTracked(ulong reqId)
-        {
-            lock (_exitLock)
-            {
-                return _pendingRequests.ContainsKey(reqId) || _ignoredResponseIds.ContainsKey(reqId);
-            }
         }
 
         private sealed class PendingRequestCancellation
@@ -1665,7 +1771,7 @@ namespace TDengine.Driver.Impl.WebSocketMethods
 
                 if (e != null)
                 {
-                    pending.TrySetResult(new WsMessage(null, WebSocketMessageType.Close, e));
+                    pending.TrySetResult(new AsyncWsMessage(e));
                 }
                 else
                 {

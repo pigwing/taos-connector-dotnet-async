@@ -72,6 +72,11 @@ namespace Driver.Test.Client.Query
                     .ConfigureAwait(false);
                 var prepare = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
                 await SendSingleIntPrepareResponseAsync(socket, prepare, 72, token).ConfigureAwait(false);
+                var close = await WebSocketTestProtocol.ReceiveJsonAsync(socket, token).ConfigureAwait(false);
+                Assert.Equal(WSAction.STMT2Close, WebSocketTestProtocol.GetAction(close));
+                await WebSocketTestProtocol.SendResponseAsync(socket, WSAction.STMT2Close,
+                    WebSocketTestProtocol.GetRequestId(close), new JObject(), false, token)
+                    .ConfigureAwait(false);
                 await CompleteCloseHandshakeAsync(socket, token).ConfigureAwait(false);
             });
 
